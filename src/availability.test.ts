@@ -254,7 +254,7 @@ describe("temporary place availability", () => {
     const recovered = loadSession(2_500);
 
     expect(recovered).toMatchObject({
-      version: 5,
+      version: 6,
       id: started.id,
       deadlineAt: started.deadlineAt,
       rerouteCount: 1,

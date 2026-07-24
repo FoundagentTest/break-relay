@@ -15,6 +15,15 @@ const availableSpeech = window.speechSynthesis;
 const availableUtterance = window.SpeechSynthesisUtterance;
 const availableWakeLock = Object.getOwnPropertyDescriptor(navigator, "wakeLock");
 
+function storedActiveSpace() {
+  const stored = JSON.parse(
+    window.localStorage.getItem(STORAGE_KEY) ?? "{}",
+  );
+  return stored.spaces?.find(
+    (space: { id: string }) => space.id === stored.activeSpaceId,
+  );
+}
+
 describe("Break Relay", () => {
   beforeEach(() => {
     window.localStorage.clear();
@@ -110,7 +119,7 @@ describe("Break Relay", () => {
       }),
     ).toBeInTheDocument();
     const stored = JSON.parse(window.localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(stored.stations).toHaveLength(3);
+    expect(storedActiveSpace().stations).toHaveLength(3);
     expect(stored.feeling).toBe("eyes");
     expect(stored.duration).toBe(5);
     expect(stored.hasOnboarded).toBe(true);
@@ -193,7 +202,7 @@ describe("Break Relay", () => {
         ),
     ).toBe(true);
     expect(
-      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+      storedActiveSpace().stations,
     ).toHaveLength(6);
   });
 
@@ -222,7 +231,7 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: "Begin a no-travel break" }),
     ).toBeEnabled();
     expect(
-      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+      storedActiveSpace().stations,
     ).toHaveLength(3);
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
@@ -255,7 +264,7 @@ describe("Break Relay", () => {
         name: "What would feel different for a few minutes?",
       }),
     ).toBeInTheDocument();
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations).toHaveLength(
+    expect(storedActiveSpace().stations).toHaveLength(
       4,
     );
 
@@ -302,11 +311,11 @@ describe("Break Relay", () => {
     await user.click(screen.getByRole("button", { name: "Erase history" }));
 
     expect(localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY)).toBeNull();
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations).toHaveLength(
+    expect(storedActiveSpace().stations).toHaveLength(
       3,
     );
     expect(
-      screen.getByText("Route history erased. Your stations are unchanged."),
+      screen.getByText("Route history for all spaces erased. Stations are unchanged."),
     ).toBeVisible();
   });
 
@@ -439,7 +448,7 @@ describe("Break Relay", () => {
     ).toBeInTheDocument();
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(
-      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+      storedActiveSpace().stations,
     ).toHaveLength(3);
   });
 
@@ -994,7 +1003,15 @@ describe("Break Relay", () => {
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
     const migrated = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-    expect(migrated.stations).toEqual(stations);
+    expect(migrated.spaces).toEqual([
+      expect.objectContaining({
+        id: "space-default",
+        name: "My space",
+        stations,
+        spaceMode: "small",
+      }),
+    ]);
+    expect(migrated.activeSpaceId).toBe("space-default");
     expect(migrated).toMatchObject({
       launchSetupComplete: true,
       keepAwake: false,
@@ -1002,7 +1019,7 @@ describe("Break Relay", () => {
       launchNeedsReview: false,
     });
     expect(JSON.parse(localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY) ?? "{}"))
-      .toEqual(history);
+      .toEqual({ version: 2, entries: [] });
   });
 
   it("applies quick availability to one break and restores the saved defaults afterward", async () => {
@@ -1041,7 +1058,7 @@ describe("Break Relay", () => {
     );
     expect(screen.getByText("1 / 3")).toBeVisible();
     expect(
-      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+      storedActiveSpace().stations,
     ).toHaveLength(3);
 
     await user.click(screen.getByRole("button", { name: "Begin my break" }));

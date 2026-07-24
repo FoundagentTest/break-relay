@@ -40,7 +40,8 @@ function historyEntry({
   spaceMode?: SpaceMode;
 }): RouteHistoryEntry {
   return {
-    version: 1,
+    version: 2,
+    spaceId: "space-default",
     id,
     feeling,
     durationMinutes: 5,
@@ -132,10 +133,10 @@ describe("local route memory", () => {
 
     const migrated = loadRouteMemory();
     expect(migrated).toMatchObject({
-      version: 1,
+      version: 2,
       entries: [
         {
-          version: 1,
+          version: 2,
           id: "legacy",
           durationMinutes: 5,
           outcome: "useful",

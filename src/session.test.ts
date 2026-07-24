@@ -173,7 +173,7 @@ describe("wall-clock relay reconciliation", () => {
     const recovered = loadSession(2_000);
 
     expect(recovered).toMatchObject({
-      version: 5,
+      version: 6,
       id: "legacy-active",
       status: "active",
       currentStepIndex: 0,

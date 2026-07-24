@@ -4,11 +4,18 @@ import {
 } from "./data";
 import { getRelayCapabilities } from "./capabilities";
 import { reconcileSession } from "./session";
+import {
+  DEFAULT_SPACE_ID,
+  DEFAULT_SPACE_NAME,
+  activeRelaySpace,
+  initialRelaySpace,
+} from "./spaces";
 import type {
   ActiveSession,
   Feeling,
   LaunchCapabilitySnapshot,
   Preferences,
+  RelaySpace,
   RouteStep,
   SessionRouteContext,
   SpaceMode,
@@ -38,20 +45,46 @@ function normalizeStation(value: unknown): Station | null {
   ) {
     return null;
   }
-  return { ...station, modes } as Station;
+  const presetId =
+    typeof station.presetId === "string" && station.presetId
+      ? station.presetId
+      : undefined;
+  return {
+    ...station,
+    modes,
+    ...(presetId ? { presetId } : {}),
+  } as Station;
 }
 
-export function loadPreferences(): Preferences {
-  try {
-    const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return DEFAULT_PREFERENCES;
-    const parsed = JSON.parse(saved) as Partial<Preferences>;
-    const spaceMode: SpaceMode = ["any", "small", "seated"].includes(
-      parsed.spaceMode ?? "",
-    )
-      ? (parsed.spaceMode as SpaceMode)
-      : DEFAULT_PREFERENCES.spaceMode;
-    const savedStations = Array.isArray(parsed.stations)
+function normalizeSpaceMode(value: unknown): SpaceMode {
+  return value === "any" || value === "small" || value === "seated"
+    ? value
+    : "any";
+}
+
+function safeSpaceName(value: unknown, fallback: string) {
+  if (typeof value !== "string") return fallback;
+  const clean = value.trim().replace(/\s+/g, " ").slice(0, 28);
+  return clean.length >= 2 ? clean : fallback;
+}
+
+function uniqueId(base: string, used: Set<string>) {
+  let id = base;
+  let suffix = 2;
+  while (used.has(id)) {
+    id = `${base}:${suffix}`;
+    suffix += 1;
+  }
+  used.add(id);
+  return id;
+}
+
+function normalizeSpaces(
+  parsed: Record<string, unknown>,
+): RelaySpace[] {
+  const rawSpaces = Array.isArray(parsed.spaces) ? parsed.spaces : null;
+  if (!rawSpaces) {
+    const legacyStations = Array.isArray(parsed.stations)
       ? parsed.stations
           .map(normalizeStation)
           .filter((station): station is Station => station !== null)
@@ -61,15 +94,91 @@ export function loadPreferences(): Preferences {
           )
           .slice(0, 24)
       : [];
+    return [
+      {
+        id: DEFAULT_SPACE_ID,
+        name: DEFAULT_SPACE_NAME,
+        stations: legacyStations,
+        spaceMode: normalizeSpaceMode(parsed.spaceMode),
+      },
+    ];
+  }
+
+  const usedSpaceIds = new Set<string>();
+  const usedStationIds = new Set<string>();
+  const spaces: RelaySpace[] = [];
+  for (const [index, value] of rawSpaces.slice(0, 6).entries()) {
+    if (!value || typeof value !== "object") continue;
+    const raw = value as Record<string, unknown>;
+    const requestedId =
+      typeof raw.id === "string" && raw.id.trim()
+        ? raw.id.trim().slice(0, 120)
+        : `space-recovered-${index + 1}`;
+    const id = uniqueId(requestedId, usedSpaceIds);
+    const stations: Station[] = [];
+    if (Array.isArray(raw.stations)) {
+      for (const candidate of raw.stations.slice(0, 24)) {
+        const normalized = normalizeStation(candidate);
+        if (!normalized) continue;
+        const stationId = uniqueId(
+          usedStationIds.has(normalized.id)
+            ? `${id}:${normalized.presetId ?? normalized.id}`
+            : normalized.id,
+          usedStationIds,
+        );
+        if (stations.some((station) => station.id === stationId)) continue;
+        stations.push({
+          ...normalized,
+          id: stationId,
+          ...(stationId !== normalized.id &&
+          !normalized.custom &&
+          !normalized.presetId
+            ? { presetId: normalized.id }
+            : {}),
+        });
+      }
+    }
+    spaces.push({
+      id,
+      name: safeSpaceName(raw.name, `Space ${index + 1}`),
+      stations,
+      spaceMode: normalizeSpaceMode(raw.spaceMode),
+    });
+  }
+  return spaces.length > 0 ? spaces : [initialRelaySpace()];
+}
+
+export function loadPreferences(): Preferences {
+  try {
+    const saved = window.localStorage.getItem(STORAGE_KEY);
+    if (!saved) return DEFAULT_PREFERENCES;
+    const parsed = JSON.parse(saved) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") {
+      clearPreferences();
+      return DEFAULT_PREFERENCES;
+    }
+    const spaces = normalizeSpaces(parsed);
+    const activeSpaceId =
+      typeof parsed.activeSpaceId === "string" &&
+      spaces.some((space) => space.id === parsed.activeSpaceId)
+        ? parsed.activeSpaceId
+        : spaces[0].id;
     const legacyLaunchPreferences =
       typeof parsed.launchSetupComplete !== "boolean";
     const currentCapabilities = getRelayCapabilities();
     const savedSnapshot = parsed.capabilitySnapshot;
+    const savedSnapshotRecord =
+      savedSnapshot && typeof savedSnapshot === "object"
+        ? (savedSnapshot as Record<string, unknown>)
+        : null;
     const capabilitySnapshot: LaunchCapabilitySnapshot | null =
-      savedSnapshot &&
-      typeof savedSnapshot.speech === "boolean" &&
-      typeof savedSnapshot.wakeLock === "boolean"
-        ? savedSnapshot
+      savedSnapshotRecord &&
+      typeof savedSnapshotRecord.speech === "boolean" &&
+      typeof savedSnapshotRecord.wakeLock === "boolean"
+        ? {
+            speech: savedSnapshotRecord.speech,
+            wakeLock: savedSnapshotRecord.wakeLock,
+          }
         : legacyLaunchPreferences && parsed.hasOnboarded
           ? {
               // The previous launch gate only persisted spoken mode after its
@@ -84,9 +193,26 @@ export function loadPreferences(): Preferences {
           : null;
     return {
       ...DEFAULT_PREFERENCES,
-      ...parsed,
-      spaceMode,
-      stations: savedStations,
+      version: 2,
+      spaces,
+      activeSpaceId,
+      feeling:
+        parsed.feeling === "noise" ||
+        parsed.feeling === "eyes" ||
+        parsed.feeling === "stiff" ||
+        parsed.feeling === "air"
+          ? parsed.feeling
+          : DEFAULT_PREFERENCES.feeling,
+      duration:
+        parsed.duration === 5 ||
+        parsed.duration === 7 ||
+        parsed.duration === 10
+          ? parsed.duration
+          : DEFAULT_PREFERENCES.duration,
+      audioEnabled:
+        typeof parsed.audioEnabled === "boolean"
+          ? parsed.audioEnabled
+          : DEFAULT_PREFERENCES.audioEnabled,
       keepAwake:
         typeof parsed.keepAwake === "boolean" ? parsed.keepAwake : false,
       alwaysReviewLaunch:
@@ -102,8 +228,17 @@ export function loadPreferences(): Preferences {
           ? parsed.launchNeedsReview
           : false,
       capabilitySnapshot,
+      hasOnboarded:
+        typeof parsed.hasOnboarded === "boolean"
+          ? parsed.hasOnboarded
+          : false,
     };
   } catch {
+    try {
+      clearPreferences();
+    } catch {
+      // Storage itself can be unavailable; the in-memory default still works.
+    }
     return DEFAULT_PREFERENCES;
   }
 }
@@ -157,7 +292,10 @@ function normalizeRouteStep(value: unknown): RouteStep | null {
   };
 }
 
-function normalizeRouteContext(value: unknown): SessionRouteContext | null {
+function normalizeRouteContext(
+  value: unknown,
+  fallbackSpaceId: string,
+): SessionRouteContext | null {
   if (!value || typeof value !== "object") return null;
   const context = value as Partial<SessionRouteContext>;
   const feelings: Feeling[] = ["noise", "eyes", "stiff", "air"];
@@ -179,6 +317,10 @@ function normalizeRouteContext(value: unknown): SessionRouteContext | null {
     return null;
   }
   return {
+    spaceId:
+      typeof context.spaceId === "string" && context.spaceId
+        ? context.spaceId
+        : fallbackSpaceId,
     feeling: context.feeling as Feeling,
     spaceMode: context.spaceMode as SpaceMode,
     steps: context.steps.map((step) => ({
@@ -190,10 +332,38 @@ function normalizeRouteContext(value: unknown): SessionRouteContext | null {
   };
 }
 
+function normalizeSessionSpace(
+  value: unknown,
+  fallback: RelaySpace,
+): RelaySpace {
+  if (!value || typeof value !== "object") {
+    return structuredClone(fallback);
+  }
+  const candidate = value as Partial<RelaySpace>;
+  const stations = Array.isArray(candidate.stations)
+    ? candidate.stations
+        .map(normalizeStation)
+        .filter((station): station is Station => station !== null)
+        .filter(
+          (station, index, items) =>
+            items.findIndex((item) => item.id === station.id) === index,
+        )
+        .slice(0, 24)
+    : [];
+  return {
+    id:
+      typeof candidate.id === "string" && candidate.id
+        ? candidate.id
+        : fallback.id,
+    name: safeSpaceName(candidate.name, fallback.name),
+    stations,
+    spaceMode: normalizeSpaceMode(candidate.spaceMode),
+  };
+}
+
 function normalizeSession(
   value: unknown,
-  fallbackStations: Station[],
-  fallbackSpaceMode: SpaceMode,
+  fallbackSpace: RelaySpace,
 ): ActiveSession | null {
   if (!value || typeof value !== "object") return null;
   const session = value as Omit<Partial<ActiveSession>, "version"> & {
@@ -207,7 +377,8 @@ function normalizeSession(
       session.version === 2 ||
       session.version === 3 ||
       session.version === 4 ||
-      session.version === 5) &&
+      session.version === 5 ||
+      session.version === 6) &&
     typeof session.id === "string" &&
     normalizedRoute.length > 0 &&
     normalizedRoute.every(
@@ -233,7 +404,14 @@ function normalizeSession(
     typeof session.updatedAt === "number";
   if (!valid) return null;
   const route = normalizedRoute as RouteStep[];
-  const routeContext = normalizeRouteContext(session.routeContext);
+  const spaceSnapshot = normalizeSessionSpace(
+    session.spaceSnapshot,
+    fallbackSpace,
+  );
+  const routeContext = normalizeRouteContext(
+    session.routeContext,
+    spaceSnapshot.id,
+  );
   const routeIds = new Set([
     ...route.map((step) => step.id),
     ...(routeContext?.steps.map((step) => step.stepId) ?? []),
@@ -269,8 +447,8 @@ function normalizeSession(
   const eligibleStations =
     storedEligibleStations ??
     stationsForSpaceMode(
-      fallbackStations,
-      routeContext?.spaceMode ?? fallbackSpaceMode,
+      spaceSnapshot.stations,
+      routeContext?.spaceMode ?? spaceSnapshot.spaceMode,
     );
   const unavailableStationIds = Array.isArray(
     session.unavailableStationIds,
@@ -283,6 +461,7 @@ function normalizeSession(
     ...(session as Omit<
       ActiveSession,
       | "version"
+      | "spaceSnapshot"
       | "routeContext"
       | "skippedStepIds"
       | "reachedStepIds"
@@ -293,7 +472,8 @@ function normalizeSession(
       | "cueDeliveryFailed"
       | "wakeLockFailed"
     >),
-    version: 5,
+    version: 6,
+    spaceSnapshot,
     route,
     routeContext,
     skippedStepIds,
@@ -323,10 +503,10 @@ export function loadSession(now = Date.now()): ActiveSession | null {
     const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
     if (!saved) return null;
     const preferences = loadPreferences();
+    const fallbackSpace = activeRelaySpace(preferences);
     const parsed = normalizeSession(
       JSON.parse(saved) as unknown,
-      preferences.stations,
-      preferences.spaceMode,
+      fallbackSpace,
     );
     if (!parsed) {
       clearSession();

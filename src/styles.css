@@ -1249,6 +1249,48 @@ a:focus-visible {
   color: var(--lime);
 }
 
+.space-switcher {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  padding: 12px 14px;
+  margin: 0 0 26px;
+  border: 1px solid rgba(220, 231, 164, 0.32);
+  border-radius: var(--radius-sm);
+  background: rgba(220, 231, 164, 0.08);
+}
+
+.space-switcher label {
+  color: var(--lime);
+  font-size: 0.59rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.space-switcher select {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 36px 0 0;
+  border: 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0;
+  background: transparent;
+  color: var(--white);
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 1.35rem;
+}
+
+.space-switcher select option {
+  background: var(--ink);
+  color: var(--white);
+}
+
+.space-switcher small {
+  color: rgba(255, 255, 255, 0.56);
+  font-size: 0.58rem;
+}
+
 .ready-time {
   position: relative;
   display: flex;
@@ -1564,6 +1606,167 @@ a:focus-visible {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 18px;
+}
+
+.spaces-section > .panel-section__heading {
+  align-items: flex-start;
+}
+
+.spaces-section .panel-section__heading p {
+  max-width: 300px;
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+  line-height: 1.45;
+}
+
+.space-limit {
+  flex: 0 0 auto;
+  padding: 5px 9px;
+  border-radius: 99px;
+  background: var(--paper-deep);
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+  font-weight: 800;
+}
+
+.space-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.space-list > li {
+  display: grid;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 248, 0.58);
+  grid-template-columns: 1fr auto;
+}
+
+.space-list > li.is-active {
+  border-color: rgba(93, 141, 110, 0.6);
+  background: rgba(200, 222, 208, 0.28);
+}
+
+.space-list__main {
+  display: flex;
+  min-width: 0;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 6px;
+  color: var(--ink);
+  text-align: left;
+}
+
+.space-list__main span,
+.space-list__main strong,
+.space-list__main small {
+  display: block;
+}
+
+.space-list__main strong {
+  font-size: 0.75rem;
+}
+
+.space-list__main small {
+  margin-top: 3px;
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+}
+
+.space-list__main em {
+  padding: 4px 7px;
+  border-radius: 99px;
+  background: var(--mint);
+  color: var(--ink);
+  font-size: 0.56rem;
+  font-style: normal;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.space-row-actions {
+  display: flex;
+  gap: 3px;
+}
+
+.space-row-actions button:disabled {
+  opacity: 0.3;
+}
+
+.rename-space-form,
+.space-delete-confirm {
+  grid-column: 1 / -1;
+}
+
+.rename-space-form label,
+.new-space-form label {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--ink-soft);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.rename-space-form > div,
+.new-space-form > div {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.rename-space-form input,
+.new-space-form input {
+  min-width: 0;
+  min-height: 42px;
+  flex: 1;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--white);
+  color: var(--ink);
+}
+
+.rename-space-form .secondary-button,
+.new-space-form .secondary-button {
+  min-height: 42px;
+  padding: 0 13px;
+  font-size: 0.66rem;
+}
+
+.space-delete-confirm {
+  padding: 11px;
+  border-radius: 9px;
+  background: rgba(227, 107, 75, 0.08);
+}
+
+.space-delete-confirm p {
+  margin: 0 0 9px;
+  color: var(--ink-soft);
+  font-size: 0.64rem;
+  line-height: 1.4;
+}
+
+.space-delete-confirm button {
+  margin-right: 9px;
+}
+
+.new-space-form {
+  padding-top: 15px;
+}
+
+.space-safeguard {
+  margin: 10px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.61rem;
 }
 
 .panel-stations {
@@ -2780,8 +2983,11 @@ a:focus-visible {
   }
 
   .ready-card .eyebrow,
+  .space-switcher,
   .ready-time,
-  .ready-description {
+  .ready-description,
+  .availability-toggle,
+  .availability-panel {
     grid-column: 1;
   }
 
@@ -3016,6 +3222,15 @@ a:focus-visible {
 
   .settings-panel {
     padding: 24px 20px;
+  }
+
+  .space-list > li {
+    align-items: start;
+    grid-template-columns: 1fr;
+  }
+
+  .space-row-actions {
+    justify-content: flex-end;
   }
 
   .session-header {

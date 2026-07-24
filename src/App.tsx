@@ -38,19 +38,34 @@ import {
   loadSession,
   savePreferences,
   saveSession,
+  SESSION_STORAGE_KEY,
+  STORAGE_KEY,
 } from "./storage";
 import {
   appendRouteHistory,
   clearRouteMemory,
   createRouteHistoryEntry,
   loadRouteMemory,
+  ROUTE_MEMORY_STORAGE_KEY,
   saveRouteMemory,
 } from "./routeMemory";
+import {
+  MAX_RELAY_SPACES,
+  activeRelaySpace,
+  cleanSpaceName,
+  createEmptySpace,
+  customStationForSpace,
+  duplicateRelaySpace,
+  spaceNameError,
+  stationForSpace,
+  stationPresetId,
+} from "./spaces";
 import type {
   ActiveSession,
   Feeling,
   LaunchCapabilitySnapshot,
   Preferences,
+  RelaySpace,
   RouteOutcome,
   SpaceMode,
   Station,
@@ -180,7 +195,8 @@ function PrivacyNote() {
     <div className="privacy-note">
       <span className="privacy-dot" aria-hidden="true" />
       <span>
-        No account or analytics. Stations and route learning stay in this browser.
+        No account, location access, or analytics. Space names, stations, and
+        route learning stay in this browser.
       </span>
     </div>
   );
@@ -243,8 +259,8 @@ function StationSetup({
   editing,
   onCancel,
 }: {
-  draft: Preferences;
-  onDraftChange: (draft: Preferences) => void;
+  draft: RelaySpace;
+  onDraftChange: (draft: RelaySpace) => void;
   onContinue: () => void;
   editing: boolean;
   onCancel: () => void;
@@ -263,7 +279,11 @@ function StationSetup({
     () => stationsForSpaceMode(draft.stations, draft.spaceMode),
     [draft.spaceMode, draft.stations],
   );
-  const selectedIds = new Set(safeStations.map((station) => station.id));
+  const selectedPresetIds = new Set(
+    safeStations
+      .map(stationPresetId)
+      .filter((id): id is string => id !== null),
+  );
   const inactiveStations = draft.stations.filter(
     (station) => !station.modes.includes(draft.spaceMode),
   );
@@ -289,15 +309,30 @@ function StationSetup({
   }
 
   function toggleStation(station: Station) {
-    if (selectedIds.has(station.id)) {
+    const presetId = stationPresetId(station);
+    if (
+      draft.stations.some((item) => item.id === station.id) ||
+      (presetId && selectedPresetIds.has(presetId))
+    ) {
       onDraftChange({
         ...draft,
-        stations: draft.stations.filter((item) => item.id !== station.id),
+        stations: draft.stations.filter(
+          (item) =>
+            item.id !== station.id &&
+            (!presetId || stationPresetId(item) !== presetId),
+        ),
       });
       return;
     }
     if (draft.stations.length >= 12) return;
-    onDraftChange({ ...draft, stations: [...draft.stations, station] });
+    const existingIds = new Set(draft.stations.map((item) => item.id));
+    onDraftChange({
+      ...draft,
+      stations: [
+        ...draft.stations,
+        stationForSpace(station, draft.id, existingIds),
+      ],
+    });
   }
 
   function addCustom(event: React.FormEvent) {
@@ -312,19 +347,12 @@ function StationSetup({
       setCustomError("Twelve saved places is the local limit.");
       return;
     }
-    const station: Station = {
-      id: `custom-${cleanName.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`,
+    const station = customStationForSpace({
       name: cleanName,
-      kind: "custom",
-      detail: "Your own reachable stop",
-      modes:
-        draft.spaceMode === "seated"
-          ? ["any", "small", "seated"]
-          : draft.spaceMode === "small"
-            ? ["any", "small"]
-            : ["any"],
-      custom: true,
-    };
+      spaceId: draft.id,
+      spaceMode: draft.spaceMode,
+      existingIds: draft.stations.map((item) => item.id),
+    });
     onDraftChange({ ...draft, stations: [...draft.stations, station] });
     setCustomName("");
     setCustomError("");
@@ -344,7 +372,9 @@ function StationSetup({
       <div className="setup-shell">
         <section className="setup-intro">
           <div>
-            <p className="eyebrow">{editing ? "EDIT YOUR ROUTE" : "SETUP · ABOUT ONE MINUTE"}</p>
+            <p className="eyebrow">
+              {editing ? `EDIT · ${draft.name}` : "SETUP · ABOUT ONE MINUTE"}
+            </p>
             <h1>Mark the places that can carry a break.</h1>
             <p className="lede">
               Choose spots you can safely reach right now. A turn away from the
@@ -381,7 +411,7 @@ function StationSetup({
 
             <div className="station-grid">
               {visiblePresets.map((station) => {
-                const selected = selectedIds.has(station.id);
+                const selected = selectedPresetIds.has(station.id);
                 return (
                   <button
                     aria-pressed={selected}
@@ -393,7 +423,9 @@ function StationSetup({
                   >
                     <span className="station-number" aria-hidden="true">
                       {selected
-                        ? safeStations.findIndex((item) => item.id === station.id) + 1
+                        ? safeStations.findIndex(
+                            (item) => stationPresetId(item) === station.id,
+                          ) + 1
                         : "＋"}
                     </span>
                     <span>
@@ -654,11 +686,13 @@ function AudioChoice({
 
 function TuneSetup({
   draft,
+  space,
   onDraftChange,
   onBack,
   onStart,
 }: {
   draft: Preferences;
+  space: RelaySpace;
   onDraftChange: (draft: Preferences) => void;
   onBack: () => void;
   onStart: () => void;
@@ -707,11 +741,11 @@ function TuneSetup({
               <span>minutes</span>
             </div>
             <p>
-              {draft.stations.length} saved places in rotation ·{" "}
+              {space.stations.length} saved places in {space.name} ·{" "}
               {FEELINGS.find((item) => item.id === draft.feeling)?.label.toLowerCase()}
             </p>
             <div className="mini-route" aria-label="Your relay stations">
-              {draft.stations.map((station, index) => (
+              {space.stations.map((station, index) => (
                 <div key={station.id}>
                   <span>{index + 1}</span>
                   <small>{station.name}</small>
@@ -1041,6 +1075,7 @@ function Home({
   onReview,
   onStart,
   onSettings,
+  onSpaceSwitch,
 }: {
   preferences: Preferences;
   unavailableNow: string[];
@@ -1049,23 +1084,25 @@ function Home({
   onReview: () => void;
   onStart: () => void;
   onSettings: () => void;
+  onSpaceSwitch: (spaceId: string) => void;
 }) {
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
   const capabilities = getRelayCapabilities();
   const spokenMode = preferences.audioEnabled && capabilities.speech;
   const awakeMode = preferences.keepAwake && capabilities.wakeLock;
+  const activeSpace = activeRelaySpace(preferences);
   const compatibleStations = stationsForSpaceMode(
-    preferences.stations,
-    preferences.spaceMode,
+    activeSpace.stations,
+    activeSpace.spaceMode,
   );
   const activeStations = availableStations(
-    preferences.stations,
-    preferences.spaceMode,
+    activeSpace.stations,
+    activeSpace.spaceMode,
     unavailableNow,
   );
   const incompatibleCount =
-    preferences.stations.length - compatibleStations.length;
+    activeSpace.stations.length - compatibleStations.length;
 
   function toggleAvailability(stationId: string) {
     onAvailabilityChange(
@@ -1106,6 +1143,25 @@ function Home({
               {feeling?.symbol}
             </div>
             <p className="eyebrow">READY WHEN YOU ARE</p>
+            <div className="space-switcher">
+              <label htmlFor="active-relay-space">Relay space</label>
+              <select
+                id="active-relay-space"
+                onChange={(event) => onSpaceSwitch(event.target.value)}
+                value={activeSpace.id}
+              >
+                {preferences.spaces.map((space) => (
+                  <option key={space.id} value={space.id}>
+                    {space.name}
+                  </option>
+                ))}
+              </select>
+              <small>
+                {SPACE_MODES.find((mode) => mode.id === activeSpace.spaceMode)
+                  ?.label ?? "Movement set"}{" "}
+                · saved only in this browser
+              </small>
+            </div>
             <div className="ready-time">
               <strong>{preferences.duration}</strong>
               <span>minute relay</span>
@@ -1272,6 +1328,11 @@ function SettingsPanel({
   onKeepAwakeChange,
   onReviewLaunch,
   onReset,
+  onCreateSpace,
+  onDeleteSpace,
+  onDuplicateSpace,
+  onRenameSpace,
+  onSwitchSpace,
 }: {
   preferences: Preferences;
   onClose: () => void;
@@ -1282,11 +1343,64 @@ function SettingsPanel({
   onKeepAwakeChange: (enabled: boolean) => void;
   onReviewLaunch: () => void;
   onReset: () => void;
+  onCreateSpace: (name: string) => void;
+  onDeleteSpace: (spaceId: string) => void;
+  onDuplicateSpace: (spaceId: string, name: string) => void;
+  onRenameSpace: (spaceId: string, name: string) => void;
+  onSwitchSpace: (spaceId: string) => void;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [confirmHistoryReset, setConfirmHistoryReset] = useState(false);
   const [historyCleared, setHistoryCleared] = useState(false);
+  const [newSpaceName, setNewSpaceName] = useState("");
+  const [spaceError, setSpaceError] = useState("");
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(
+    null,
+  );
   const closeRef = useRef<HTMLButtonElement>(null);
+  const activeSpace = activeRelaySpace(preferences);
+
+  function submitNewSpace(event: React.FormEvent) {
+    event.preventDefault();
+    if (preferences.spaces.length >= MAX_RELAY_SPACES) {
+      setSpaceError(`You can keep up to ${MAX_RELAY_SPACES} relay spaces here.`);
+      return;
+    }
+    const error = spaceNameError(newSpaceName, preferences.spaces);
+    if (error) {
+      setSpaceError(error);
+      return;
+    }
+    onCreateSpace(cleanSpaceName(newSpaceName));
+  }
+
+  function submitRename(event: React.FormEvent, spaceId: string) {
+    event.preventDefault();
+    const error = spaceNameError(
+      renameValue,
+      preferences.spaces,
+      spaceId,
+    );
+    if (error) {
+      setSpaceError(error);
+      return;
+    }
+    onRenameSpace(spaceId, cleanSpaceName(renameValue));
+    setRenamingId(null);
+    setSpaceError("");
+  }
+
+  function duplicateName(space: RelaySpace) {
+    const base = `${space.name} copy`;
+    if (!spaceNameError(base, preferences.spaces)) return base;
+    for (let index = 2; index <= MAX_RELAY_SPACES; index += 1) {
+      const candidate = `${space.name} ${index}`;
+      if (!spaceNameError(candidate, preferences.spaces)) return candidate;
+    }
+    return `Space ${preferences.spaces.length + 1}`;
+  }
 
   useEffect(() => {
     closeRef.current?.focus();
@@ -1329,6 +1443,181 @@ function SettingsPanel({
           </button>
         </div>
 
+        <section className="panel-section spaces-section">
+          <div className="panel-section__heading">
+            <div>
+              <h3>Relay spaces</h3>
+              <p>
+                A small local map for each place you use Relay. Need, duration,
+                and launch preferences stay shared.
+              </p>
+            </div>
+            <span className="space-limit">
+              {preferences.spaces.length} / {MAX_RELAY_SPACES}
+            </span>
+          </div>
+          <ul className="space-list">
+            {preferences.spaces.map((space) => {
+              const isActive = space.id === activeSpace.id;
+              return (
+                <li className={isActive ? "is-active" : ""} key={space.id}>
+                  {renamingId === space.id ? (
+                    <form
+                      className="rename-space-form"
+                      onSubmit={(event) => submitRename(event, space.id)}
+                    >
+                      <label htmlFor={`rename-${space.id}`}>
+                        Rename {space.name}
+                      </label>
+                      <div>
+                        <input
+                          autoFocus
+                          id={`rename-${space.id}`}
+                          maxLength={28}
+                          onChange={(event) => {
+                            setRenameValue(event.target.value);
+                            setSpaceError("");
+                          }}
+                          value={renameValue}
+                        />
+                        <button className="secondary-button" type="submit">
+                          Save
+                        </button>
+                        <button
+                          className="text-button"
+                          onClick={() => setRenamingId(null)}
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <>
+                      <button
+                        aria-current={isActive ? "true" : undefined}
+                        className="space-list__main"
+                        onClick={() => onSwitchSpace(space.id)}
+                        type="button"
+                      >
+                        <span>
+                          <strong>{space.name}</strong>
+                          <small>
+                            {space.stations.length} saved{" "}
+                            {space.stations.length === 1 ? "place" : "places"} ·{" "}
+                            {SPACE_MODES.find(
+                              (mode) => mode.id === space.spaceMode,
+                            )?.label}
+                          </small>
+                        </span>
+                        {isActive && <em>Active</em>}
+                      </button>
+                      <div className="space-row-actions">
+                        <button
+                          aria-label={`Rename ${space.name}`}
+                          className="icon-button icon-button--small"
+                          onClick={() => {
+                            setRenamingId(space.id);
+                            setRenameValue(space.name);
+                            setConfirmDeleteId(null);
+                            setSpaceError("");
+                          }}
+                          type="button"
+                        >
+                          <Icon name="edit" size={15} />
+                        </button>
+                        <button
+                          aria-label={`Duplicate ${space.name}`}
+                          className="icon-button icon-button--small"
+                          disabled={
+                            preferences.spaces.length >= MAX_RELAY_SPACES
+                          }
+                          onClick={() =>
+                            onDuplicateSpace(space.id, duplicateName(space))
+                          }
+                          type="button"
+                        >
+                          <Icon name="repeat" size={15} />
+                        </button>
+                        <button
+                          aria-label={`Delete ${space.name}`}
+                          className="icon-button icon-button--small"
+                          disabled={preferences.spaces.length === 1}
+                          onClick={() => {
+                            setConfirmDeleteId(space.id);
+                            setRenamingId(null);
+                          }}
+                          type="button"
+                        >
+                          <Icon name="trash" size={15} />
+                        </button>
+                      </div>
+                    </>
+                  )}
+                  {confirmDeleteId === space.id && (
+                    <div className="space-delete-confirm" role="alert">
+                      <p>
+                        Delete {space.name} and its saved stations? Other spaces
+                        will not change.
+                      </p>
+                      <button
+                        className="danger-button"
+                        onClick={() => {
+                          onDeleteSpace(space.id);
+                          setConfirmDeleteId(null);
+                        }}
+                        type="button"
+                      >
+                        Delete space
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() => setConfirmDeleteId(null)}
+                        type="button"
+                      >
+                        Keep it
+                      </button>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+          <form className="new-space-form" onSubmit={submitNewSpace}>
+            <label htmlFor="new-space-name">Name a new relay space</label>
+            <div>
+              <input
+                disabled={preferences.spaces.length >= MAX_RELAY_SPACES}
+                id="new-space-name"
+                maxLength={28}
+                onChange={(event) => {
+                  setNewSpaceName(event.target.value);
+                  setSpaceError("");
+                }}
+                placeholder="e.g. Shared office"
+                value={newSpaceName}
+              />
+              <button
+                className="secondary-button"
+                disabled={preferences.spaces.length >= MAX_RELAY_SPACES}
+                type="submit"
+              >
+                Create
+              </button>
+            </div>
+          </form>
+          {spaceError && (
+            <p className="field-error" role="alert">
+              {spaceError}
+            </p>
+          )}
+          {preferences.spaces.length === 1 && (
+            <p className="space-safeguard">
+              Keep at least one space. You can empty or rename it instead.
+            </p>
+          )}
+        </section>
+
         <section className="panel-section">
           <div className="panel-section__heading">
             <h3>Relay points</h3>
@@ -1337,9 +1626,9 @@ function SettingsPanel({
             </button>
           </div>
           <ol className="panel-stations">
-            {preferences.stations.map((station, index) => {
+            {activeSpace.stations.map((station, index) => {
               const active = station.modes.includes(
-                preferences.spaceMode,
+                activeSpace.spaceMode,
               );
               return (
                 <li
@@ -1355,7 +1644,7 @@ function SettingsPanel({
                         : `Stored · inactive for ${
                             SPACE_MODES.find(
                               (mode) =>
-                                mode.id === preferences.spaceMode,
+                                mode.id === activeSpace.spaceMode,
                             )?.label.toLowerCase() ?? "this mode"
                           }`}
                     </small>
@@ -1446,7 +1735,7 @@ function SettingsPanel({
           <div>
             <h3>Route learning stays here</h3>
             <p>
-              When you rate a route, Relay keeps a short history in this browser
+              When you rate a route, Relay keeps a short, space-aware history in this browser
               to vary the next place and favor station actions that fit in
               similar moments. It is never sent anywhere.
             </p>
@@ -1463,7 +1752,7 @@ function SettingsPanel({
               </button>
             ) : (
               <div className="history-reset-confirm">
-                <p>Erase route learning but keep your saved stations?</p>
+                <p>Erase route learning for all spaces but keep every saved station?</p>
                 <div>
                   <button
                     className="secondary-button"
@@ -1488,7 +1777,7 @@ function SettingsPanel({
             )}
             {historyCleared && (
               <p className="history-cleared" role="status">
-                Route history erased. Your stations are unchanged.
+                Route history for all spaces erased. Stations are unchanged.
               </p>
             )}
           </div>
@@ -1504,8 +1793,8 @@ function SettingsPanel({
             <div className="reset-confirm" role="alert">
               <p>
                 <strong>Start completely over?</strong>
-                This removes saved stations, route history, and any active relay
-                from this browser.
+                This removes every relay space, saved station, route history,
+                and any active relay from this browser.
               </p>
               <div>
                 <button className="danger-button" onClick={onReset} type="button">
@@ -2060,9 +2349,15 @@ function Completion({
 export default function App() {
   const initial = useMemo(loadPreferences, []);
   const recovered = useMemo(loadSession, []);
-  const initialRouteMemory = useMemo(loadRouteMemory, []);
+  const initialRouteMemory = useMemo(
+    () => loadRouteMemory(activeRelaySpace(initial).id),
+    [initial],
+  );
   const [preferences, setPreferences] = useState<Preferences>(initial);
   const [draft, setDraft] = useState<Preferences>(initial);
+  const [draftSpace, setDraftSpace] = useState<RelaySpace>(
+    activeRelaySpace(initial),
+  );
   const [screen, setScreen] = useState<Screen>(
     recovered
       ? recovered.status === "complete"
@@ -2088,6 +2383,44 @@ export default function App() {
   useEffect(() => {
     if (preferences.hasOnboarded) savePreferences(preferences);
   }, [preferences]);
+
+  useEffect(() => {
+    function acceptOtherTabChange(event: StorageEvent) {
+      if (event.key === STORAGE_KEY) {
+        const next = event.newValue
+          ? loadPreferences()
+          : DEFAULT_PREFERENCES;
+        setPreferences(next);
+        if (screen !== "stations" && screen !== "tune") {
+          setDraft(next);
+          setDraftSpace(activeRelaySpace(next));
+        }
+        setUnavailableNow([]);
+      }
+      if (
+        event.key === SESSION_STORAGE_KEY &&
+        event.newValue === null &&
+        session
+      ) {
+        window.speechSynthesis?.cancel?.();
+        setSession(null);
+        setUnavailableNow([]);
+        launchingRef.current = false;
+        setInterruptedCompletion(false);
+        setSettingsOpen(false);
+        setEditing(false);
+        setScreen(loadPreferences().hasOnboarded ? "home" : "stations");
+      }
+      if (event.key === ROUTE_MEMORY_STORAGE_KEY) {
+        setRouteMemory(
+          loadRouteMemory(activeRelaySpace(loadPreferences()).id),
+        );
+      }
+    }
+    window.addEventListener("storage", acceptOtherTabChange);
+    return () =>
+      window.removeEventListener("storage", acceptOtherTabChange);
+  }, [screen, session]);
 
   useEffect(() => {
     if (screen !== "session" && screen !== "complete") {
@@ -2131,14 +2464,20 @@ export default function App() {
     [],
   );
 
-  function openReadiness(source: Preferences, returnTo: "home" | "tune") {
+  function openReadiness(
+    source: Preferences,
+    returnTo: "home" | "tune",
+    space = activeRelaySpace(source),
+  ) {
     setDraft(source);
+    setDraftSpace(space);
     setReadinessReturn(returnTo);
     setScreen("readiness");
   }
 
   function startRelay(
     source: Preferences,
+    sourceSpace: RelaySpace,
     options: {
       audioEnabled: boolean;
       keepAwake: boolean;
@@ -2147,17 +2486,22 @@ export default function App() {
   ) {
     if (launchingRef.current || session?.status === "active") return;
     const compatibleStations = stationsForSpaceMode(
-      source.stations,
-      source.spaceMode,
+      sourceSpace.stations,
+      sourceSpace.spaceMode,
     );
     const activeStations = availableStations(
-      source.stations,
-      source.spaceMode,
+      sourceSpace.stations,
+      sourceSpace.spaceMode,
       unavailableNow,
     );
     launchingRef.current = true;
     const nextPreferences = {
       ...source,
+      version: 2 as const,
+      spaces: source.spaces.map((space) =>
+        space.id === sourceSpace.id ? sourceSpace : space,
+      ),
+      activeSpaceId: sourceSpace.id,
       audioEnabled: options.audioEnabled,
       keepAwake: options.keepAwake,
       alwaysReviewLaunch: options.alwaysReviewLaunch,
@@ -2177,13 +2521,14 @@ export default function App() {
             Date.now(),
             {
               history: routeMemory.entries,
-              spaceMode: nextPreferences.spaceMode,
+              spaceMode: sourceSpace.spaceMode,
+              spaceId: sourceSpace.id,
             },
           )
         : buildNoTravelRoute(
             nextPreferences.feeling,
             nextPreferences.duration,
-            nextPreferences.spaceMode,
+            sourceSpace.spaceMode,
           );
     let nextSession = createSession({
       route,
@@ -2191,8 +2536,9 @@ export default function App() {
       audioEnabled: options.audioEnabled,
       keepAwake: options.keepAwake,
       routeContext: {
+        spaceId: sourceSpace.id,
         feeling: nextPreferences.feeling,
-        spaceMode: nextPreferences.spaceMode,
+        spaceMode: sourceSpace.spaceMode,
         steps: route
           .filter(
             (step) =>
@@ -2211,6 +2557,7 @@ export default function App() {
       unavailableStationIds: compatibleStations
         .filter((station) => unavailableNow.includes(station.id))
         .map((station) => station.id),
+      spaceSnapshot: sourceSpace,
     });
     nextSession = markCueAnnounced(nextSession);
     commitSession(nextSession);
@@ -2250,7 +2597,7 @@ export default function App() {
       session,
       {
         feeling: preferences.feeling,
-        spaceMode: preferences.spaceMode,
+        spaceMode: session.spaceSnapshot.spaceMode,
       },
       outcome,
     );
@@ -2267,25 +2614,34 @@ export default function App() {
   if (screen === "stations") {
     return (
       <StationSetup
-        draft={draft}
+        draft={draftSpace}
         editing={editing}
         onCancel={() => {
           setDraft(preferences);
+          setDraftSpace(activeRelaySpace(preferences));
           setEditing(false);
           setScreen("home");
         }}
         onContinue={() => {
           if (editing) {
-            const next = { ...draft, hasOnboarded: true };
+            const next = {
+              ...preferences,
+              spaces: preferences.spaces.map((space) =>
+                space.id === draftSpace.id ? draftSpace : space,
+              ),
+              activeSpaceId: draftSpace.id,
+              hasOnboarded: true,
+            };
             updatePreferences(next);
             setDraft(next);
+            setDraftSpace(draftSpace);
             setEditing(false);
             setScreen("home");
           } else {
             setScreen("tune");
           }
         }}
-        onDraftChange={setDraft}
+        onDraftChange={setDraftSpace}
       />
     );
   }
@@ -2294,11 +2650,12 @@ export default function App() {
     return (
       <TuneSetup
         draft={draft}
+        space={draftSpace}
         onBack={() => setScreen("stations")}
         onDraftChange={setDraft}
         onStart={() => {
           setEditing(false);
-          openReadiness(draft, "tune");
+          openReadiness(draft, "tune", draftSpace);
         }}
       />
     );
@@ -2308,7 +2665,7 @@ export default function App() {
     return (
       <Readiness
         onBack={() => setScreen(readinessReturn)}
-        onStart={(options) => startRelay(draft, options)}
+        onStart={(options) => startRelay(draft, draftSpace, options)}
         preferences={draft}
       />
     );
@@ -2353,8 +2710,10 @@ export default function App() {
   if (screen === "session" && session?.status === "active") {
     return (
       <RelaySession
-        fallbackFeeling={preferences.feeling}
-        fallbackSpaceMode={preferences.spaceMode}
+        fallbackFeeling={
+          session.routeContext?.feeling ?? preferences.feeling
+        }
+        fallbackSpaceMode={session.spaceSnapshot.spaceMode}
         key={session.id}
         onCapabilityFailure={(kind) =>
           flagSessionCapabilityFailure(session.id, kind)
@@ -2373,7 +2732,11 @@ export default function App() {
         onExtend={() => {
           let extension = replaceWithExtension(
             session,
-            [buildExtension(preferences.feeling)],
+            [
+              buildExtension(
+                session.routeContext?.feeling ?? preferences.feeling,
+              ),
+            ],
           );
           const cue = extension.route[0].spokenCue;
           if (extension.audioEnabled) speak(cue);
@@ -2401,7 +2764,7 @@ export default function App() {
             openReadiness(preferences, "home");
             return;
           }
-          startRelay(preferences, {
+          startRelay(preferences, activeRelaySpace(preferences), {
             audioEnabled: preferences.audioEnabled,
             keepAwake: preferences.keepAwake,
             alwaysReviewLaunch: preferences.alwaysReviewLaunch,
@@ -2409,6 +2772,18 @@ export default function App() {
         }}
         preferences={preferences}
         unavailableNow={unavailableNow}
+        onSpaceSwitch={(spaceId) => {
+          if (spaceId === preferences.activeSpaceId) return;
+          const space = preferences.spaces.find(
+            (candidate) => candidate.id === spaceId,
+          );
+          if (!space) return;
+          const next = { ...preferences, activeSpaceId: spaceId };
+          setUnavailableNow([]);
+          updatePreferences(next);
+          setDraft(next);
+          setDraftSpace(space);
+        }}
       />
       {settingsOpen && (
         <SettingsPanel
@@ -2421,10 +2796,11 @@ export default function App() {
           onClose={() => setSettingsOpen(false)}
           onClearHistory={() => {
             clearRouteMemory();
-            setRouteMemory({ version: 1, entries: [] });
+            setRouteMemory({ version: 2, entries: [] });
           }}
           onEdit={() => {
             setDraft(preferences);
+            setDraftSpace(activeRelaySpace(preferences));
             setUnavailableNow([]);
             setEditing(true);
             setSettingsOpen(false);
@@ -2443,13 +2819,96 @@ export default function App() {
             clearRouteMemory();
             setPreferences(DEFAULT_PREFERENCES);
             setDraft(DEFAULT_PREFERENCES);
-            setRouteMemory({ version: 1, entries: [] });
+            setDraftSpace(activeRelaySpace(DEFAULT_PREFERENCES));
+            setRouteMemory({ version: 2, entries: [] });
             setSession(null);
             setUnavailableNow([]);
             launchingRef.current = false;
             setSettingsOpen(false);
             setEditing(false);
             setScreen("stations");
+          }}
+          onCreateSpace={(name) => {
+            const space = createEmptySpace(name, preferences.spaces);
+            const next = {
+              ...preferences,
+              spaces: [...preferences.spaces, space],
+              activeSpaceId: space.id,
+            };
+            updatePreferences(next);
+            setDraft(next);
+            setDraftSpace(space);
+            setUnavailableNow([]);
+            setSettingsOpen(false);
+            setEditing(true);
+            setScreen("stations");
+          }}
+          onDeleteSpace={(spaceId) => {
+            if (preferences.spaces.length <= 1) return;
+            const spaces = preferences.spaces.filter(
+              (space) => space.id !== spaceId,
+            );
+            const activeSpaceId =
+              preferences.activeSpaceId === spaceId
+                ? spaces[0].id
+                : preferences.activeSpaceId;
+            const next = { ...preferences, spaces, activeSpaceId };
+            updatePreferences(next);
+            setDraft(next);
+            setDraftSpace(activeRelaySpace(next));
+            setUnavailableNow([]);
+            setRouteMemory((memory) => {
+              const updated = {
+                version: 2 as const,
+                entries: memory.entries.filter(
+                  (entry) => entry.spaceId !== spaceId,
+                ),
+              };
+              saveRouteMemory(updated);
+              return updated;
+            });
+          }}
+          onDuplicateSpace={(spaceId, name) => {
+            if (preferences.spaces.length >= MAX_RELAY_SPACES) return;
+            const source = preferences.spaces.find(
+              (space) => space.id === spaceId,
+            );
+            if (!source || spaceNameError(name, preferences.spaces)) return;
+            const space = duplicateRelaySpace(
+              source,
+              name,
+              preferences.spaces,
+            );
+            const next = {
+              ...preferences,
+              spaces: [...preferences.spaces, space],
+              activeSpaceId: space.id,
+            };
+            updatePreferences(next);
+            setDraft(next);
+            setDraftSpace(space);
+            setUnavailableNow([]);
+          }}
+          onRenameSpace={(spaceId, name) => {
+            if (spaceNameError(name, preferences.spaces, spaceId)) return;
+            const spaces = preferences.spaces.map((space) =>
+              space.id === spaceId ? { ...space, name } : space,
+            );
+            const next = { ...preferences, spaces };
+            updatePreferences(next);
+            setDraft(next);
+            setDraftSpace(activeRelaySpace(next));
+          }}
+          onSwitchSpace={(spaceId) => {
+            const space = preferences.spaces.find(
+              (candidate) => candidate.id === spaceId,
+            );
+            if (!space) return;
+            const next = { ...preferences, activeSpaceId: spaceId };
+            updatePreferences(next);
+            setDraft(next);
+            setDraftSpace(space);
+            setUnavailableNow([]);
           }}
           preferences={preferences}
         />

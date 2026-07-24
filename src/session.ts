@@ -1,8 +1,10 @@
 import type {
   ActiveSession,
+  RelaySpace,
   RouteStep,
   SessionRouteContext,
 } from "./types";
+import { initialRelaySpace } from "./spaces";
 
 const SECOND = 1000;
 
@@ -53,6 +55,7 @@ export function createSession({
   rerouteCount = 0,
   now = Date.now(),
   id,
+  spaceSnapshot = initialRelaySpace(),
 }: {
   route: RouteStep[];
   durationMinutes: number;
@@ -68,12 +71,14 @@ export function createSession({
   rerouteCount?: number;
   now?: number;
   id?: string;
+  spaceSnapshot?: RelaySpace;
 }): ActiveSession {
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 5,
+    version: 6,
     id: id ?? createSessionId(now),
+    spaceSnapshot: structuredClone(spaceSnapshot),
     route,
     routeContext,
     skippedStepIds,
@@ -382,6 +387,7 @@ export function replaceWithExtension(
       neutralStepIds: session.neutralStepIds,
       now,
       id: session.id,
+      spaceSnapshot: session.spaceSnapshot,
     }),
     extensionUsed: true,
   };

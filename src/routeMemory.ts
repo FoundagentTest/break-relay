@@ -7,6 +7,7 @@ import type {
   RouteOutcome,
   SpaceMode,
 } from "./types";
+import { DEFAULT_SPACE_ID } from "./spaces";
 
 export const ROUTE_MEMORY_STORAGE_KEY = "break-relay-route-memory-v1";
 export const MAX_ROUTE_HISTORY = 24;
@@ -16,7 +17,7 @@ const SPACE_MODES = new Set<SpaceMode>(["any", "small", "seated"]);
 const OUTCOMES = new Set<RouteOutcome>(["useful", "not_fit", "unrated"]);
 
 export function emptyRouteMemory(): RouteMemory {
-  return { version: 1, entries: [] };
+  return { version: 2, entries: [] };
 }
 
 function safeString(value: unknown, maximum: number) {
@@ -58,7 +59,10 @@ function normalizeStep(
   };
 }
 
-function normalizeEntry(value: unknown): RouteHistoryEntry | null {
+function normalizeEntry(
+  value: unknown,
+  legacySpaceId: string,
+): RouteHistoryEntry | null {
   if (!value || typeof value !== "object") return null;
   const entry = value as Record<string, unknown>;
   const id = safeString(entry.id, 200);
@@ -67,6 +71,7 @@ function normalizeEntry(value: unknown): RouteHistoryEntry | null {
   const durationMinutes = entry.durationMinutes ?? entry.duration;
   const completedAt = entry.completedAt;
   const outcome = migrateOutcome(entry.outcome);
+  const spaceId = safeString(entry.spaceId, 120) ?? legacySpaceId;
   const skippedIds = new Set(
     Array.isArray(entry.skippedStepIds)
       ? entry.skippedStepIds.filter(
@@ -99,8 +104,9 @@ function normalizeEntry(value: unknown): RouteHistoryEntry | null {
   }
 
   return {
-    version: 1,
+    version: 2,
     id,
+    spaceId,
     feeling,
     durationMinutes,
     spaceMode,
@@ -125,7 +131,9 @@ function boundedEntries(entries: RouteHistoryEntry[]) {
     .slice(-MAX_ROUTE_HISTORY);
 }
 
-export function loadRouteMemory(): RouteMemory {
+export function loadRouteMemory(
+  legacySpaceId = DEFAULT_SPACE_ID,
+): RouteMemory {
   try {
     const saved = window.localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY);
     if (!saved) return emptyRouteMemory();
@@ -144,10 +152,10 @@ export function loadRouteMemory(): RouteMemory {
       return emptyRouteMemory();
     }
     const memory = {
-      version: 1 as const,
+      version: 2 as const,
       entries: boundedEntries(
         candidateEntries
-          .map(normalizeEntry)
+          .map((entry) => normalizeEntry(entry, legacySpaceId))
           .filter((entry): entry is RouteHistoryEntry => entry !== null),
       ),
     };
@@ -162,7 +170,7 @@ export function loadRouteMemory(): RouteMemory {
 export function saveRouteMemory(memory: RouteMemory) {
   try {
     const bounded: RouteMemory = {
-      version: 1,
+      version: 2,
       entries: boundedEntries(memory.entries),
     };
     window.localStorage.setItem(
@@ -187,7 +195,7 @@ export function appendRouteHistory(
   entry: RouteHistoryEntry,
 ): RouteMemory {
   return {
-    version: 1,
+    version: 2,
     entries: boundedEntries([
       ...memory.entries.filter((item) => item.id !== entry.id),
       entry,
@@ -225,8 +233,9 @@ export function createRouteHistoryEntry(
   const reachedIds = new Set(session.reachedStepIds);
   const neutralIds = new Set(session.neutralStepIds);
   return {
-    version: 1,
+    version: 2,
     id: session.id,
+    spaceId: context?.spaceId ?? session.spaceSnapshot.id,
     feeling: context?.feeling ?? fallback.feeling,
     durationMinutes: session.durationMinutes,
     spaceMode: context?.spaceMode ?? fallback.spaceMode,

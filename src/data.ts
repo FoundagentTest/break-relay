@@ -7,6 +7,7 @@ import type {
   Station,
   StationKind,
 } from "./types";
+import { initialRelaySpace } from "./spaces";
 
 export const FEELINGS: {
   id: Feeling;
@@ -327,10 +328,11 @@ const QUIET_ACTIONS: Record<
 };
 
 export const DEFAULT_PREFERENCES: Preferences = {
-  stations: [],
+  version: 2,
+  spaces: [initialRelaySpace()],
+  activeSpaceId: "space-default",
   feeling: "noise",
   duration: 7,
-  spaceMode: "any",
   audioEnabled: true,
   keepAwake: false,
   alwaysReviewLaunch: false,
@@ -435,6 +437,7 @@ function preferenceForAction(
 export interface RouteBuildOptions {
   history?: RouteHistoryEntry[];
   spaceMode?: SpaceMode;
+  spaceId?: string;
 }
 
 export function stationsForSpaceMode(
@@ -587,9 +590,13 @@ export function buildRoute(
   options: RouteBuildOptions = {},
 ): RouteStep[] {
   const spaceMode = options.spaceMode ?? "any";
-  const history = [...(options.history ?? [])].sort(
+  const history = (options.history ?? [])
+    .filter(
+      (entry) => !options.spaceId || entry.spaceId === options.spaceId,
+    )
+    .sort(
     (a, b) => b.completedAt - a.completedAt,
-  );
+    );
   const eligible = stationsForSpaceMode(stations, spaceMode);
   if (eligible.length === 0) {
     throw new Error("A relay needs at least one station available in this space.");

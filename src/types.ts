@@ -15,14 +15,23 @@ export interface Station {
   kind: StationKind;
   detail: string;
   modes: SpaceMode[];
+  presetId?: string;
   custom?: boolean;
 }
 
-export interface Preferences {
+export interface RelaySpace {
+  id: string;
+  name: string;
   stations: Station[];
+  spaceMode: SpaceMode;
+}
+
+export interface Preferences {
+  version: 2;
+  spaces: RelaySpace[];
+  activeSpaceId: string;
   feeling: Feeling;
   duration: 5 | 7 | 10;
-  spaceMode: SpaceMode;
   audioEnabled: boolean;
   keepAwake: boolean;
   alwaysReviewLaunch: boolean;
@@ -58,8 +67,9 @@ export interface RouteMemoryStep {
 }
 
 export interface RouteHistoryEntry {
-  version: 1;
+  version: 2;
   id: string;
+  spaceId: string;
   feeling: Feeling;
   durationMinutes: number;
   spaceMode: SpaceMode;
@@ -71,19 +81,21 @@ export interface RouteHistoryEntry {
 }
 
 export interface RouteMemory {
-  version: 1;
+  version: 2;
   entries: RouteHistoryEntry[];
 }
 
 export interface SessionRouteContext {
+  spaceId?: string;
   feeling: Feeling;
   spaceMode: SpaceMode;
   steps: Omit<RouteMemoryStep, "used" | "skipped">[];
 }
 
 export interface ActiveSession {
-  version: 5;
+  version: 6;
   id: string;
+  spaceSnapshot: RelaySpace;
   route: RouteStep[];
   routeContext: SessionRouteContext | null;
   skippedStepIds: string[];

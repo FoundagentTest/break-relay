@@ -2,11 +2,14 @@
 
 Saved stations and temporary availability are intentionally separate.
 
-- `Preferences.stations` is the durable station map. Changing `spaceMode`
-  changes compatibility, never the saved array.
+- Each `RelaySpace.stations` array is a durable station map with its own
+  `spaceMode`. Changing that mode changes compatibility, never the saved array
+  or another space.
 - Home starts with every compatible saved station available. The optional
-  “Places available now” control excludes stations only from the next relay.
+  “Places available now” control excludes stations only from the next relay in
+  the active space. Switching spaces clears those temporary exclusions.
 - `ActiveSession.eligibleStations` snapshots that relay’s available choices.
+  `spaceSnapshot` preserves its originating name, movement mode, and map.
   `unavailableStationIds`, `rerouteCount`, and the recomposed route are stored
   with the active session only so a reload can recover safely.
 - Zero eligible stations produces an exact-duration comfortable-pause and
@@ -33,6 +36,6 @@ so replacement cannot cycle. Terminal completion clears the eligible and
 unavailable station snapshots while retaining neutral step IDs long enough to
 write an accurate optional route rating.
 
-Session version 5 migrates versions 1–4. Preference loading no longer filters
-stations by the current movement mode, which repairs the earlier destructive
-mode-switch behavior without changing storage keys or losing saved places.
+Session version 6 migrates versions 1–5. A legacy session receives the migrated
+default-space snapshot; a version 6 session never consults the current saved
+active space for refresh, reroute, pause, completion, or extension.
