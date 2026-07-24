@@ -2939,6 +2939,46 @@ export default function App() {
   }, [initialHandoffCapture.status, preferences]);
 
   useEffect(() => {
+    function acceptHandoffNavigation() {
+      const captured = captureHandoffFromLocation();
+      if (captured.status === "none") return;
+
+      const existing = session ?? loadSession();
+      setSettingsOpen(false);
+      setEditing(false);
+      setUnavailableNow([]);
+      launchingRef.current = false;
+
+      if (existing) {
+        window.speechSynthesis?.cancel?.();
+        setSession(existing);
+        setHandoff(null);
+        setHandoffFailure(null);
+        setInterruptedCompletion(existing.status === "complete");
+        setScreen(
+          existing.status === "complete" ? "complete" : "recover",
+        );
+        return;
+      }
+
+      setInterruptedCompletion(false);
+      if (captured.status === "ready") {
+        setHandoff(captured.handoff);
+        setHandoffFailure(null);
+        setScreen("handoffReceive");
+      } else {
+        setHandoff(null);
+        setHandoffFailure(captured.reason);
+        setScreen("handoffError");
+      }
+    }
+
+    window.addEventListener("hashchange", acceptHandoffNavigation);
+    return () =>
+      window.removeEventListener("hashchange", acceptHandoffNavigation);
+  }, [session]);
+
+  useEffect(() => {
     function acceptOtherTabChange(event: StorageEvent) {
       if (event.key === STORAGE_KEY) {
         const next = event.newValue

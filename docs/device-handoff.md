@@ -10,8 +10,10 @@ an account or backend. The existing local Begin action is unchanged.
    availability.
 2. Preparing the handoff does not create an `ActiveSession`, start a clock, or
    play a cue. It creates only an in-memory transfer snapshot and a QR/link.
-3. The receiver captures and validates the URL fragment, then replaces the
-   current history entry without the fragment before showing a preview.
+3. The receiver captures and validates the URL fragment on initial load or
+   same-document `hashchange`, then replaces the current history entry without
+   the fragment before showing a preview. This also covers pasting a handoff
+   into an already-open or cached Relay.
 4. Only **Start on this device** creates the durable local session and plays
    the first real cue. Receiver speech, vibration, and wake-lock capability are
    detected afresh and source launch settings are not transferred.

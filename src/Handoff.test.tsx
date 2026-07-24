@@ -159,6 +159,37 @@ describe("account-free device handoff", () => {
     }
   });
 
+  it("captures and scrubs a handoff pasted into an already-open clean receiver without reloading", async () => {
+    const handoff = preparedHandoff();
+    render(<App />);
+
+    expect(
+      screen.getByRole("heading", {
+        name: "Mark the places that can carry a break.",
+      }),
+    ).toBeVisible();
+
+    const url = new URL(handoffUrl(handoff, "http://localhost/"));
+    window.location.hash = url.hash;
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", {
+          name: "One prepared break. Start it here?",
+        }),
+      ).toBeVisible(),
+    );
+    expect(window.location.hash).toBe("");
+    expect(window.location.pathname).toBe("/");
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(
+      screen.queryByRole("heading", {
+        name: "Mark the places that can carry a break.",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("lets a clean receiver confirm, applies real capability fallback, recovers full controls, and completes without onboarding first", async () => {
     const user = userEvent.setup();
     const handoff = preparedHandoff();
