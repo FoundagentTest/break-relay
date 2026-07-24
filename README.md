@@ -1,26 +1,43 @@
 # Break Relay
 
-A calm browser-based break route for desk workers. Pick a few safe places in
-your actual space, choose what needs a change and how long you have, then follow
-one sparse spoken cue at a time.
+A calm, local-only route away from the screen and back.
 
-## Run locally
+Production: [https://break-relay.vercel.app](https://break-relay.vercel.app)
+
+## Run and validate
+
+Node 20 or newer is recommended.
 
 ```bash
-npm install
+npm ci
 npm run dev
 ```
 
-Open the local URL printed by Vite. No account, API key, or server is required.
-Preferences are stored in the browser under `break-relay-preferences-v1`.
-
-## Validate
+Before publishing:
 
 ```bash
 npm test
 npm run build
+npm run preview
 ```
 
-The automated flow covers first-time station setup, route tailoring, all primary
-session controls, the return boundary, a two-minute extension, persistence,
-editing, reset, and exact route duration assembly.
+The production build includes the manifest, icons, and service worker in
+`dist/`. The build stamps the service worker with the current asset fingerprint;
+an installed app keeps working offline and offers an in-app refresh when a new
+worker is waiting.
+
+## Deploy
+
+The repository is linked to the Vercel project `break-relay`. Publish the tested
+working tree with:
+
+```bash
+vercel --prod
+```
+
+Keep the stable `break-relay.vercel.app` alias on the production deployment and
+leave SSO deployment protection disabled so the product remains public.
+
+Break Relay has no backend, accounts, analytics, or runtime secrets. Preferences
+and an unfinished relay are the only data stored, both in browser
+`localStorage`. Clearing site data resets them.
