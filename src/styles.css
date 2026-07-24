@@ -2211,6 +2211,7 @@ a:focus-visible {
 }
 
 .visual-only-button {
+  min-height: 44px;
   margin-left: 16px;
 }
 

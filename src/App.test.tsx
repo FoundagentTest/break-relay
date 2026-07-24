@@ -573,6 +573,54 @@ describe("Break Relay", () => {
     });
   });
 
+  it("lets a remembered visual-mode user review, test, and restore spoken cues", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "noise",
+        duration: 5,
+        spaceMode: "any",
+        audioEnabled: false,
+        keepAwake: false,
+        alwaysReviewLaunch: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: { speech: true, wakeLock: false },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    expect(screen.getByText("Visible cues + vibration")).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Review or change" }),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Use spoken cues" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Test voice (optional)" }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Use spoken cues" }));
+    await user.click(
+      screen.getByRole("button", { name: "Test voice (optional)" }),
+    );
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(2);
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({ audioEnabled: true });
+    expect(
+      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({ audioEnabled: true, status: "active" });
+  });
+
   it("keeps a denied wake request in-session and requires review next time", async () => {
     const user = userEvent.setup();
     const request = vi.fn().mockRejectedValue(new Error("NotAllowedError"));

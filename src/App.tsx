@@ -696,8 +696,8 @@ function Readiness({
   }) => void;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
-  const [visualOnly, setVisualOnly] = useState(
-    preferences.audioEnabled && !capabilities.speech,
+  const [spokenCues, setSpokenCues] = useState(
+    preferences.audioEnabled && capabilities.speech,
   );
   const [audioTested, setAudioTested] = useState(false);
   const [audioTestFailed, setAudioTestFailed] = useState(false);
@@ -707,8 +707,7 @@ function Readiness({
   const [alwaysReviewLaunch, setAlwaysReviewLaunch] = useState(
     preferences.alwaysReviewLaunch,
   );
-  const audioEnabled =
-    preferences.audioEnabled && capabilities.speech && !visualOnly;
+  const audioEnabled = spokenCues && capabilities.speech;
 
   function checkAudio() {
     setAudioTested(true);
@@ -716,7 +715,7 @@ function Readiness({
     speak(
       "Break Relay is ready. The next cue will name one place and one action.",
       () => {
-        setVisualOnly(true);
+        setSpokenCues(false);
         setAudioTestFailed(true);
       },
     );
@@ -767,7 +766,7 @@ function Readiness({
                     ? "A cue can play while this page remains active. Background and locked-screen delivery still depends on your browser and operating system."
                     : "Keep the dim cue page visible when possible. Relay will still recover the correct step and deadline when you return."}
                 </p>
-                {preferences.audioEnabled && capabilities.speech && !visualOnly && (
+                {audioEnabled && (
                   <button
                     className={`secondary-button audio-check ${
                       audioTested && !audioTestFailed ? "is-checked" : ""
@@ -784,17 +783,19 @@ function Readiness({
                       : "Test voice (optional)"}
                   </button>
                 )}
-                {preferences.audioEnabled && capabilities.speech && (
+                {capabilities.speech && (
                   <button
                     className="inline-button visual-only-button"
                     onClick={() => {
                       window.speechSynthesis.cancel();
-                      setVisualOnly((current) => !current);
+                      setSpokenCues((current) => !current);
                       setAudioTestFailed(false);
                     }}
                     type="button"
                   >
-                    {visualOnly ? "Use spoken cues" : "Use visual cues instead"}
+                    {audioEnabled
+                      ? "Use visual cues instead"
+                      : "Use spoken cues"}
                   </button>
                 )}
                 {audioTestFailed && (
