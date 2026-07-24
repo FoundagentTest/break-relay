@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export default function ServiceWorkerUpdate() {
   const [waiting, setWaiting] = useState<ServiceWorker | null>(null);
+  const refreshRequested = useRef(false);
 
   useEffect(() => {
     if (!import.meta.env.PROD || !("serviceWorker" in navigator)) return;
@@ -32,7 +33,7 @@ export default function ServiceWorkerUpdate() {
       });
 
     function reloadOnUpdate() {
-      if (reloading) return;
+      if (!refreshRequested.current || reloading) return;
       reloading = true;
       window.location.reload();
     }
@@ -53,7 +54,10 @@ export default function ServiceWorkerUpdate() {
         <span>Your active relay is saved before the app refreshes.</span>
       </div>
       <button
-        onClick={() => waiting.postMessage({ type: "SKIP_WAITING" })}
+        onClick={() => {
+          refreshRequested.current = true;
+          waiting.postMessage({ type: "SKIP_WAITING" });
+        }}
         type="button"
       >
         Update now

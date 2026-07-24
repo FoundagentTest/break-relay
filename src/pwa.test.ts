@@ -40,6 +40,7 @@ describe("offline and install metadata", () => {
     expect(worker).toContain("assetPaths");
     expect(worker).toContain("SKIP_WAITING");
     expect(registration).toContain('updateViaCache: "none"');
+    expect(registration).toContain("refreshRequested.current");
     expect(registration).toContain("Update now");
   });
 });
