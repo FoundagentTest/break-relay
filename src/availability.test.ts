@@ -156,7 +156,13 @@ describe("temporary place availability", () => {
       expect(rerouted.id).toBe(started.id);
       expect(rerouted.deadlineAt).toBe(started.deadlineAt);
       expect(rerouted.currentStepIndex).toBe(0);
-      expect(rerouted.route[0].phase).toBe("move");
+      if (phase === "quiet") {
+        expect(["move", "quiet", "return"]).toContain(
+          rerouted.route[0].phase,
+        );
+      } else {
+        expect(rerouted.route[0].phase).toBe("move");
+      }
       expect(rerouted.route[0].station.id).not.toBe(rejected.id);
       expect(rerouted.route.every(
         (step) => step.station.id !== rejected.id,
@@ -169,7 +175,72 @@ describe("temporary place availability", () => {
     },
   );
 
-  it("uses a comfortable pause when no alternative remains", () => {
+  it("rejects an upcoming station while keeping the real place already reached", () => {
+    const configured = ["water", "hallway", "window"].map(
+      (id) => STATION_PRESETS.find((station) => station.id === id)!,
+    );
+    const route = buildRoute(configured, "noise", 10, 26);
+    const started = createSession({
+      route,
+      durationMinutes: 10,
+      audioEnabled: false,
+      keepAwake: false,
+      routeContext: learnableContext(route),
+      eligibleStations: configured,
+      now: 1_000,
+      id: "upcoming-reroute",
+    });
+    const firstArrival = atPhase(started, "arrive");
+    const currentStation = firstArrival.route[firstArrival.currentStepIndex]
+      .station;
+    const upcoming = firstArrival.route
+      .slice(firstArrival.currentStepIndex + 1)
+      .find(
+        (step) =>
+          step.phase === "arrive" &&
+          step.station.id !== currentStation.id,
+      )!.station;
+    const now = firstArrival.stepDeadlineAt - 1_000;
+    const alternatives = configured.filter(
+      (station) => station.id !== upcoming.id,
+    );
+    const replacement = buildReplacementRoute(
+      alternatives,
+      "noise",
+      10,
+      Math.ceil(remainingMs(firstArrival, now) / 1_000),
+      71,
+      {
+        revision: 1,
+        spaceMode: "any",
+        startingStationId: currentStation.id,
+      },
+    ).route;
+    const rerouted = recomposeSession(
+      firstArrival,
+      replacement,
+      upcoming.id,
+      now,
+    );
+
+    expect(rerouted.route[0]).toMatchObject({
+      phase: "arrive",
+      station: { id: currentStation.id },
+    });
+    expect(
+      rerouted.route.some((step) => step.station.id === upcoming.id),
+    ).toBe(false);
+    expect(
+      rerouted.route.reduce(
+        (seconds, step) => seconds + step.durationSeconds,
+        0,
+      ),
+    ).toBe(Math.ceil(remainingMs(firstArrival, now) / 1_000));
+    expect(rerouted.deadlineAt).toBe(started.deadlineAt);
+    expect(rerouted.unavailableStationIds).toContain(upcoming.id);
+  });
+
+  it("uses an honest no-travel pause when no alternative remains", () => {
     const only = stations[0];
     const route = buildRoute([only], "eyes", 5, 8);
     const started = createSession({
@@ -198,6 +269,56 @@ describe("temporary place availability", () => {
     expect(rerouted.route.some(
       (step) => step.station.id === only.id,
     )).toBe(false);
+  });
+
+  it("uses a real remaining place whenever the transition budget can still support it", () => {
+    const windowStation = stations[0];
+    const enoughWhileAlreadyThere = buildReplacementRoute(
+      [windowStation],
+      "eyes",
+      7,
+      80,
+      12,
+      {
+        revision: 1,
+        spaceMode: "any",
+        startingStationId: windowStation.id,
+      },
+    ).route;
+    const tooLateToUseIt = buildReplacementRoute(
+      [windowStation],
+      "eyes",
+      7,
+      45,
+      12,
+      {
+        revision: 1,
+        spaceMode: "any",
+        startingStationId: windowStation.id,
+      },
+    ).route;
+
+    expect(enoughWhileAlreadyThere[0]).toMatchObject({
+      phase: "arrive",
+      station: { id: windowStation.id },
+    });
+    expect(
+      enoughWhileAlreadyThere.some(
+        (step) => step.station.id === "comfortable-pause",
+      ),
+    ).toBe(false);
+    expect(
+      enoughWhileAlreadyThere.reduce(
+        (seconds, step) => seconds + step.durationSeconds,
+        0,
+      ),
+    ).toBe(80);
+    expect(tooLateToUseIt).toHaveLength(1);
+    expect(tooLateToUseIt[0]).toMatchObject({
+      phase: "return",
+      station: { id: "desk-return" },
+      durationSeconds: 45,
+    });
   });
 
   it("bounds repeated replacement and never cycles to a rejected place", () => {

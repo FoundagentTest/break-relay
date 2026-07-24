@@ -4,6 +4,7 @@ import {
 } from "./data";
 import { getRelayCapabilities } from "./capabilities";
 import { reconcileSession } from "./session";
+import { isLearnableRouteStep } from "./routeMemory";
 import {
   DEFAULT_SPACE_ID,
   DEFAULT_SPACE_NAME,
@@ -428,12 +429,7 @@ function normalizeSession(
       )
     : route
         .slice(0, (session.currentStepIndex ?? 0) + 1)
-        .filter(
-          (step) =>
-            step.phase === "arrive" ||
-            (step.phase === "quiet" &&
-              step.station.id !== "comfortable-pause"),
-        )
+        .filter(isLearnableRouteStep)
         .map((step) => step.id);
   const neutralStepIds = Array.isArray(session.neutralStepIds)
     ? session.neutralStepIds.filter(

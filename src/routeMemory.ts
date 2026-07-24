@@ -5,6 +5,7 @@ import type {
   RouteMemory,
   RouteMemoryStep,
   RouteOutcome,
+  RouteStep,
   SpaceMode,
 } from "./types";
 import { DEFAULT_SPACE_ID } from "./spaces";
@@ -18,6 +19,25 @@ const OUTCOMES = new Set<RouteOutcome>(["useful", "not_fit", "unrated"]);
 
 export function emptyRouteMemory(): RouteMemory {
   return { version: 2, entries: [] };
+}
+
+export function isLearnableRouteStep(step: RouteStep) {
+  return (
+    (step.phase === "arrive" || step.phase === "quiet") &&
+    step.station.id !== "comfortable-pause" &&
+    step.station.id !== "desk-return"
+  );
+}
+
+export function routeMemoryContextSteps(route: RouteStep[]) {
+  return route
+    .filter(isLearnableRouteStep)
+    .map((step) => ({
+      stepId: step.id,
+      stationId: step.station.id,
+      stationName: step.station.name,
+      action: step.action,
+    }));
 }
 
 function safeString(value: unknown, maximum: number) {
@@ -81,7 +101,7 @@ function normalizeEntry(
   );
   const steps = Array.isArray(entry.steps)
     ? entry.steps
-        .slice(0, 8)
+        .slice(0, 32)
         .map((step) => normalizeStep(step, skippedIds))
         .filter((step): step is RouteMemoryStep => step !== null)
     : [];
@@ -216,19 +236,7 @@ export function createRouteHistoryEntry(
   const context = session.routeContext;
   const sourceSteps =
     context?.steps ??
-    session.route
-      .filter(
-        (step) =>
-          step.phase === "arrive" ||
-          (step.phase === "quiet" &&
-            step.station.id !== "comfortable-pause"),
-      )
-      .map((step) => ({
-        stepId: step.id,
-        stationId: step.station.id,
-        stationName: step.station.name,
-        action: step.action,
-      }));
+    routeMemoryContextSteps(session.route);
   if (sourceSteps.length === 0) return null;
   const skippedIds = new Set(session.skippedStepIds);
   const reachedIds = new Set(session.reachedStepIds);

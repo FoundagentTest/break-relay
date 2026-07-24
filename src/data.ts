@@ -382,7 +382,7 @@ function contextSimilarity(
 function feedbackValue(outcome: RouteHistoryEntry["outcome"]) {
   if (outcome === "useful") return 1;
   if (outcome === "not_fit") return -0.68;
-  return 0;
+  return 0.08;
 }
 
 function preferenceForStation(
@@ -393,13 +393,18 @@ function preferenceForStation(
   spaceMode: SpaceMode,
 ) {
   const score = history.reduce((total, entry, index) => {
-    const used = entry.steps.some(
-      (item) => item.stationId === stationId && item.used && !item.skipped,
+    const stationSteps = entry.steps.filter(
+      (item) => item.stationId === stationId,
     );
-    if (!used) return total;
+    const used = stationSteps.some((item) => item.used && !item.skipped);
+    const skipped = stationSteps.some((item) => item.skipped);
+    if (!used && !skipped) return total;
+    const evidence =
+      (used ? feedbackValue(entry.outcome) : 0) +
+      (skipped ? -0.24 : 0);
     return (
       total +
-      feedbackValue(entry.outcome) *
+      evidence *
         contextSimilarity(entry, feeling, durationMinutes, spaceMode) *
         (1 / (1 + index * 0.22))
     );
@@ -416,17 +421,20 @@ function preferenceForAction(
   spaceMode: SpaceMode,
 ) {
   const score = history.reduce((total, entry, index) => {
-    const step = entry.steps.find(
+    const steps = entry.steps.filter(
       (item) =>
         item.stationId === stationId &&
-        item.action === action &&
-        item.used &&
-        !item.skipped,
+        item.action === action,
     );
-    if (!step) return total;
+    const used = steps.some((item) => item.used && !item.skipped);
+    const skipped = steps.some((item) => item.skipped);
+    if (!used && !skipped) return total;
+    const evidence =
+      (used ? feedbackValue(entry.outcome) : 0) +
+      (skipped ? -0.32 : 0);
     return (
       total +
-      feedbackValue(entry.outcome) *
+      evidence *
         contextSimilarity(entry, feeling, durationMinutes, spaceMode) *
         (1 / (1 + index * 0.22))
     );
@@ -464,6 +472,10 @@ export function availableStations(
 
 const QUIET_KINDS = new Set<StationKind>(["view", "nature", "rest"]);
 
+function isQuietStation(station: Station) {
+  return QUIET_KINDS.has(station.kind);
+}
+
 function uniqueStationOrder(entry: RouteHistoryEntry) {
   return entry.steps.reduce<string[]>((order, step) => {
     if (!order.includes(step.stationId)) order.push(step.stationId);
@@ -481,6 +493,16 @@ function quietAffinity(feeling: Feeling, kind: StationKind) {
   return affinity[feeling][kind] ?? 0;
 }
 
+function activeAffinity(feeling: Feeling, kind: StationKind) {
+  const affinity: Record<Feeling, Partial<Record<StationKind, number>>> = {
+    noise: { water: 2.8, threshold: 2.1, movement: 1.8, custom: 1.4 },
+    eyes: { threshold: 2.6, movement: 2.2, water: 2, custom: 1.4 },
+    stiff: { movement: 3, threshold: 2.2, water: 1.6, custom: 1.3 },
+    air: { threshold: 3, movement: 2.6, water: 1.8, custom: 1.5 },
+  };
+  return affinity[feeling][kind] ?? 0;
+}
+
 function transitionSeconds(spaceMode: SpaceMode) {
   if (spaceMode === "seated") return 15;
   if (spaceMode === "small") return 22;
@@ -491,12 +513,6 @@ function returnSeconds(spaceMode: SpaceMode) {
   if (spaceMode === "seated") return 40;
   if (spaceMode === "small") return 50;
   return 70;
-}
-
-function settleSeconds(spaceMode: SpaceMode) {
-  if (spaceMode === "seated") return 15;
-  if (spaceMode === "small") return 20;
-  return 25;
 }
 
 function arrivalSeconds(kind: StationKind) {
@@ -512,20 +528,19 @@ function arrivalSeconds(kind: StationKind) {
   return durations[kind];
 }
 
-function moveAction(station: Station, spaceMode: SpaceMode) {
+function moveAction(
+  station: Station,
+  spaceMode: SpaceMode,
+  legIndex: number,
+) {
+  const lead = legIndex === 0 ? "Begin" : "Next";
   if (spaceMode === "seated") {
-    return `Stay seated if you prefer. Turn or reach toward ${station.name} in the easiest way available.`;
+    return `${lead} by staying seated if you prefer. Turn or reach toward ${station.name} in the easiest way available.`;
   }
   if (spaceMode === "small") {
-    return `Turn away from the screen and go to ${station.name} if comfortable. Keep the route within this room.`;
+    return `${lead} by turning away from the screen and going to ${station.name} if comfortable. Keep this leg within the room.`;
   }
-  return `Leave the screen behind and make your way to ${station.name} at a comfortable pace.`;
-}
-
-function splitQuietTime(seconds: number, durationMinutes: number) {
-  if (durationMinutes <= 5 || seconds < 210) return [seconds];
-  const first = Math.ceil(seconds / 2);
-  return [first, seconds - first];
+  return `${lead} by leaving the screen behind and making your way to ${station.name} at a comfortable pace.`;
 }
 
 function chooseAction({
@@ -589,6 +604,44 @@ export function buildRoute(
   seed = Date.now(),
   options: RouteBuildOptions = {},
 ): RouteStep[] {
+  return composeRoute(
+    stations,
+    feeling,
+    durationMinutes,
+    durationMinutes * 60,
+    seed,
+    options,
+    { revision: 0, flexibleReturn: false },
+  );
+}
+
+interface CompositionRuntime {
+  revision: number;
+  flexibleReturn: boolean;
+  startingStationId?: string;
+}
+
+function targetStationCount(
+  durationMinutes: number,
+  spaceMode: SpaceMode,
+  eligibleCount: number,
+) {
+  if (durationMinutes <= 5 || spaceMode === "seated") return 1;
+  if (spaceMode === "small") {
+    return durationMinutes >= 10 ? Math.min(2, eligibleCount) : 1;
+  }
+  return Math.min(durationMinutes >= 10 ? 3 : 2, eligibleCount);
+}
+
+function composeRoute(
+  stations: Station[],
+  feeling: Feeling,
+  durationMinutes: number,
+  requestedSeconds: number,
+  seed: number,
+  options: RouteBuildOptions,
+  runtime: CompositionRuntime,
+): RouteStep[] {
   const spaceMode = options.spaceMode ?? "any";
   const history = (options.history ?? [])
     .filter(
@@ -608,8 +661,14 @@ export function buildRoute(
     .slice(0, 3)
     .map(uniqueStationOrder);
 
-  const rankedStations = eligible
-    .map((station) => {
+  function ranked(
+    candidates: Station[],
+    position: number,
+    selected: Station[] = [],
+  ) {
+    const selectedKinds = new Set(selected.map((station) => station.kind));
+    const ordered = candidates
+      .map((station) => {
       const preference = exploring
         ? 0
         : preferenceForStation(
@@ -622,152 +681,289 @@ export function buildRoute(
       const recentPenalty = exploring
         ? 0
         : recentOrders.reduce(
-            (penalty, order, recentIndex) =>
+          (penalty, order, recentIndex) =>
               penalty +
-              (order[0] === station.id ? 0.7 / (recentIndex + 1) : 0),
+              (order[position] === station.id
+                ? 0.9 / (recentIndex + 1)
+                : order.includes(station.id)
+                  ? 0.16 / (recentIndex + 1)
+                  : 0),
             0,
           );
       return {
         station,
         score:
-          seededUnit(seed, `station:primary:${station.id}`) +
-          (exploring ? 0 : quietAffinity(feeling, station.kind)) +
-          preference * 0.24 -
-          recentPenalty,
+            seededUnit(seed, `station:${position}:${station.id}`) +
+            (exploring
+              ? 0
+              : isQuietStation(station)
+                ? quietAffinity(feeling, station.kind)
+                : activeAffinity(feeling, station.kind)) +
+            preference * 0.3 -
+            recentPenalty -
+            (selectedKinds.has(station.kind) ? 0.32 : 0),
       };
     })
     .sort(
       (a, b) =>
         b.score - a.score || a.station.id.localeCompare(b.station.id),
-    );
-  let station = rankedStations[0].station;
-  if (
-    !exploring &&
-    rankedStations.length > 1 &&
-    recentOrders[0]?.[0] === station.id
-  ) {
-    station = rankedStations[1].station;
+      )
+      .map((item) => item.station);
+    if (
+      !exploring &&
+      ordered.length > 1 &&
+      recentOrders[0]?.[position] === ordered[0].id
+    ) {
+      return [ordered[1], ordered[0], ...ordered.slice(2)];
+    }
+    return ordered;
   }
 
-  const totalSeconds = durationMinutes * 60;
-  const moveDuration = transitionSeconds(spaceMode);
-  const arrivalDuration = arrivalSeconds(station.kind);
-  const returnDuration = returnSeconds(spaceMode);
-  const canStay = QUIET_KINDS.has(station.kind);
-  const settleDuration = canStay ? 0 : settleSeconds(spaceMode);
-  const quietTotal =
-    totalSeconds -
-    moveDuration -
-    arrivalDuration -
-    settleDuration -
-    returnDuration;
-  if (quietTotal < 60) {
-    throw new Error("This relay boundary is too short for a safe route arc.");
-  }
-  const feelingLabel = FEELINGS.find((item) => item.id === feeling)?.label ?? "";
-
-  const move = moveAction(station, spaceMode);
-  const arrival = chooseAction({
-    choices:
-      ARRIVAL_ACTIONS[feeling][station.kind] ??
-      ARRIVAL_ACTIONS[feeling].custom,
-    station,
-    phaseIndex: 1,
-    history,
-    feeling,
+  const quietCandidates = eligible.filter(isQuietStation);
+  const activeCandidates = eligible.filter(
+    (station) => !isQuietStation(station),
+  );
+  const requestedCount = targetStationCount(
     durationMinutes,
     spaceMode,
-    seed,
-    exploring,
-  });
-  const steps: RouteStep[] = [
-    {
-      id: `${station.id}-move`,
-      station,
-      action: move,
-      spokenCue: `Move phase. ${move}`,
-      durationSeconds: moveDuration,
-      phase: "move",
-    },
-    {
-      id: `${station.id}-arrive`,
-      station,
-      action: arrival,
-      spokenCue: `Arrival at ${station.name}. ${arrival}`,
-      durationSeconds: arrivalDuration,
-      phase: "arrive",
-    },
-  ];
+    eligible.length,
+  );
+  const startingStation = runtime.startingStationId
+    ? eligible.find((station) => station.id === runtime.startingStationId)
+    : undefined;
+  let sequence: Station[] = [];
 
-  const quietStation: Station = canStay
-    ? station
-    : {
-        id: "comfortable-pause",
-        name: "Comfortable pause",
-        kind: "rest",
-        detail: "No assumed destination",
-        modes: ["any", "small", "seated"],
-      };
-  if (!canStay) {
-    const settle =
-      spaceMode === "seated"
-        ? "Stay seated and turn away from the screen, or choose another comfortable position within easy reach."
-        : "Settle somewhere comfortable away from the screen, or simply turn where you are. No particular place is required.";
-    steps.push({
-      id: `${station.id}-settle`,
-      station: quietStation,
-      action: settle,
-      spokenCue: `Settle phase. ${settle}`,
-      durationSeconds: settleDuration,
-      phase: "settle",
-    });
+  if (startingStation) {
+    sequence.push(startingStation);
   }
 
-  const quietChoices = canStay
-    ? QUIET_ACTIONS[feeling][
-        station.kind as "view" | "nature" | "rest"
-      ]
-    : QUIET_ACTIONS[feeling].rest;
-  const usedQuietActions: string[] = [];
-  for (const [index, seconds] of splitQuietTime(
-    quietTotal,
-    durationMinutes,
-  ).entries()) {
-    const action = chooseAction({
+  if (startingStation && isQuietStation(startingStation)) {
+    sequence = [startingStation];
+  } else if (requestedCount === 1) {
+    if (sequence.length === 0) {
+      sequence = [
+        ranked(
+          quietCandidates.length > 0 ? quietCandidates : activeCandidates,
+          0,
+        )[0],
+      ];
+    }
+  } else {
+    const quietCarrier = ranked(
+      quietCandidates.filter(
+        (station) => station.id !== startingStation?.id,
+      ),
+      requestedCount - 1,
+      sequence,
+    )[0];
+    const leadTarget = Math.max(
+      0,
+      requestedCount - (quietCarrier ? 1 : 0),
+    );
+    while (sequence.length < leadTarget) {
+      const remaining = eligible.filter(
+        (station) =>
+          station.id !== quietCarrier?.id &&
+          !sequence.some((item) => item.id === station.id),
+      );
+      if (remaining.length === 0) break;
+      const activeRemaining = remaining.filter(
+        (station) => !isQuietStation(station),
+      );
+      sequence.push(
+        ranked(
+          activeRemaining.length > 0 ? activeRemaining : remaining,
+          sequence.length,
+          sequence,
+        )[0],
+      );
+    }
+    if (quietCarrier) sequence.push(quietCarrier);
+    while (sequence.length < requestedCount) {
+      const remaining = eligible.filter(
+        (station) => !sequence.some((item) => item.id === station.id),
+      );
+      if (remaining.length === 0) break;
+      sequence.push(
+        ranked(remaining, sequence.length, sequence)[0],
+      );
+    }
+  }
+
+  sequence = sequence.filter(
+    (station, index, items) =>
+      items.findIndex((item) => item.id === station.id) === index,
+  );
+
+  const totalSeconds = Math.max(1, Math.floor(requestedSeconds));
+  const preferredReturn = returnSeconds(spaceMode);
+  const returnDuration = runtime.flexibleReturn
+    ? totalSeconds <= preferredReturn + 60
+      ? Math.max(20, Math.min(preferredReturn, Math.floor(totalSeconds * 0.5)))
+      : preferredReturn
+    : preferredReturn;
+  const minimumCarry = runtime.flexibleReturn ? 20 : 60;
+
+  function beginsHere(station: Station) {
+    return (
+      sequence[0]?.id === station.id &&
+      runtime.startingStationId === station.id
+    );
+  }
+
+  function fixedSeconds(items: Station[], arrivals: number[]) {
+    return items.reduce(
+      (seconds, station, index) =>
+        seconds +
+        (index === 0 && beginsHere(station)
+          ? 0
+          : transitionSeconds(spaceMode)) +
+        arrivals[index],
+      returnDuration,
+    );
+  }
+
+  function minimumFixedSeconds(items: Station[]) {
+    return fixedSeconds(
+      items,
+      items.map(() => 20),
+    );
+  }
+
+  let arrivalDurations = sequence.map((station) =>
+    arrivalSeconds(station.kind),
+  );
+  while (
+    sequence.length > 1 &&
+    minimumFixedSeconds(sequence) + minimumCarry > totalSeconds
+  ) {
+    const carrierIsQuiet = isQuietStation(sequence.at(-1)!);
+    const removeIndex = carrierIsQuiet
+      ? startingStation &&
+        sequence[0].id === startingStation.id &&
+        sequence.length > 2
+        ? sequence.length - 2
+        : 0
+      : sequence.length - 1;
+    sequence.splice(removeIndex, 1);
+    arrivalDurations.splice(removeIndex, 1);
+  }
+
+  let excess =
+    fixedSeconds(sequence, arrivalDurations) + minimumCarry - totalSeconds;
+  for (let index = 0; excess > 0 && index < arrivalDurations.length; index += 1) {
+    const reducible = Math.max(0, arrivalDurations[index] - 20);
+    const reduction = Math.min(excess, reducible);
+    arrivalDurations[index] -= reduction;
+    excess -= reduction;
+  }
+
+  if (
+    sequence.length === 0 ||
+    excess > 0 ||
+    fixedSeconds(sequence, arrivalDurations) >= totalSeconds
+  ) {
+    if (runtime.flexibleReturn) {
+      return buildNoTravelRouteForSeconds(
+        feeling,
+        spaceMode,
+        totalSeconds,
+        runtime.revision,
+      );
+    }
+    throw new Error("This relay boundary is too short for a safe route arc.");
+  }
+
+  const feelingLabel = FEELINGS.find((item) => item.id === feeling)?.label ?? "";
+  const suffix = routeSuffix(runtime.revision);
+  const steps: RouteStep[] = [];
+
+  sequence.forEach((station, index) => {
+    if (!(index === 0 && beginsHere(station))) {
+      const move = moveAction(station, spaceMode, index);
+      steps.push({
+        id: `${station.id}-move${suffix}`,
+        station,
+        action: move,
+        spokenCue: `${index === 0 ? "First stop" : "Next stop"}: ${station.name}. ${move}`,
+        durationSeconds: transitionSeconds(spaceMode),
+        phase: "move",
+      });
+    }
+    const arrival = chooseAction({
       choices:
-        quietChoices.filter((choice) => !usedQuietActions.includes(choice))
-          .length > 0
-          ? quietChoices.filter(
-              (choice) => !usedQuietActions.includes(choice),
-            )
-          : [...quietChoices],
-      station: quietStation,
-      phaseIndex: index + 2,
-      history: canStay ? history : [],
+        ARRIVAL_ACTIONS[feeling][station.kind] ??
+        ARRIVAL_ACTIONS[feeling].custom,
+      station,
+      phaseIndex: index * 2 + 1,
+      history,
       feeling,
       durationMinutes,
       spaceMode,
       seed,
       exploring,
     });
-    usedQuietActions.push(action);
     steps.push({
-      id: `${quietStation.id}-quiet-${index + 1}`,
-      station: quietStation,
+      id: `${station.id}-arrive${suffix}`,
+      station,
+      action: arrival,
+      spokenCue: `At ${station.name}. ${arrival}`,
+      durationSeconds: arrivalDurations[index],
+      phase: "arrive",
+    });
+  });
+
+  const carrySeconds =
+    totalSeconds -
+    steps.reduce((seconds, step) => seconds + step.durationSeconds, 0) -
+    returnDuration;
+  const carrier = sequence.at(-1)!;
+  if (isQuietStation(carrier)) {
+    const action = chooseAction({
+      choices:
+        QUIET_ACTIONS[feeling][
+          carrier.kind as "view" | "nature" | "rest"
+        ],
+      station: carrier,
+      phaseIndex: sequence.length * 2,
+      history,
+      feeling,
+      durationMinutes,
+      spaceMode,
+      seed,
+      exploring,
+    });
+    steps.push({
+      id: `${carrier.id}-quiet${suffix}`,
+      station: carrier,
       action,
-      spokenCue: canStay
-        ? `Stay at ${station.name} if it remains comfortable. ${action}`
-        : `Stay with this comfortable pause if it suits you. ${action}`,
-      durationSeconds: seconds,
+      spokenCue: `Quiet carry at ${carrier.name}. ${action} No screen check is needed until the return cue.`,
+      durationSeconds: carrySeconds,
+      phase: "quiet",
+    });
+  } else {
+    const action = noTravelAction(feeling);
+    steps.push({
+      id: `comfortable-pause-quiet${suffix}`,
+      station: {
+        id: "comfortable-pause",
+        name: "No-travel pause",
+        kind: "rest",
+        detail: "No real quiet-capable place is available",
+        modes: ["any", "small", "seated"],
+      },
+      action,
+      spokenCue: `No quiet-capable place remains in this route. ${action} No screen check is needed until the return cue.`,
+      durationSeconds: carrySeconds,
       phase: "quiet",
     });
   }
 
   steps.push({
-    id: "return",
+    id: `return${suffix}`,
     station: {
       id: "desk-return",
-      name: "Return point",
+      name: "Return window",
       kind: "rest",
       detail: "A bounded return",
       modes: ["any", "small", "seated"],
@@ -821,7 +1017,7 @@ function buildNoTravelRouteForSeconds(
       id: `comfortable-pause-quiet${suffix}`,
       station: {
         id: "comfortable-pause",
-        name: "Comfortable pause",
+        name: "No-travel pause",
         kind: "rest",
         detail: "No travel or assumed destination",
         modes: ["any", "small", "seated"],
@@ -836,7 +1032,7 @@ function buildNoTravelRouteForSeconds(
     id: `return${suffix}`,
     station: {
       id: "desk-return",
-      name: pauseDuration > 0 ? "Return point" : "Turn away or return",
+      name: "Return window",
       kind: "rest",
       detail: "A bounded return",
       modes: ["any", "small", "seated"],
@@ -880,20 +1076,17 @@ export function buildReplacementRoute(
   durationMinutes: number,
   remainingSeconds: number,
   seed: number,
-  options: RouteBuildOptions & { revision: number },
+  options: RouteBuildOptions & {
+    revision: number;
+    startingStationId?: string;
+  },
 ): ReplacementRoute {
   const spaceMode = options.spaceMode ?? "any";
   const eligible = stationsForSpaceMode(stations, spaceMode);
   const revision = Math.max(1, options.revision);
   const wholeSeconds = Math.max(1, Math.floor(remainingSeconds));
-  const moveDuration = transitionSeconds(spaceMode);
-  const preferredReturn = returnSeconds(spaceMode);
-  const minimumArrival = 20;
 
-  if (
-    eligible.length === 0 ||
-    wholeSeconds < moveDuration + minimumArrival + preferredReturn
-  ) {
+  if (eligible.length === 0) {
     return {
       route: buildNoTravelRouteForSeconds(
         feeling,
@@ -905,84 +1098,25 @@ export function buildReplacementRoute(
     };
   }
 
-  const template = buildRoute(
+  const route = composeRoute(
     eligible,
     feeling,
-    Math.max(5, durationMinutes),
+    durationMinutes,
+    wholeSeconds,
     seed,
     options,
-  );
-  const destination = template[0].station;
-  const templateMove = template.find((step) => step.phase === "move")!;
-  const templateArrival = template.find((step) => step.phase === "arrive")!;
-  const templateMiddle = template.filter(
-    (step) =>
-      step.phase === "settle" || step.phase === "quiet",
-  );
-  const returnDuration = preferredReturn;
-  const arrivalDuration = Math.min(
-    templateArrival.durationSeconds,
-    wholeSeconds - moveDuration - returnDuration,
-  );
-  const middleSeconds =
-    wholeSeconds - moveDuration - arrivalDuration - returnDuration;
-  const suffix = routeSuffix(revision);
-  const route: RouteStep[] = [
     {
-      ...templateMove,
-      id: `${templateMove.id}${suffix}`,
-      durationSeconds: moveDuration,
+      revision,
+      flexibleReturn: true,
+      startingStationId: options.startingStationId,
     },
-    {
-      ...templateArrival,
-      id: `${templateArrival.id}${suffix}`,
-      durationSeconds: arrivalDuration,
-    },
-  ];
-
-  if (middleSeconds > 0 && templateMiddle.length > 0) {
-    const settle = templateMiddle.find((step) => step.phase === "settle");
-    const quiet = templateMiddle.filter((step) => step.phase === "quiet");
-    const settleDuration = settle
-      ? Math.min(settle.durationSeconds, middleSeconds)
-      : 0;
-    if (settle && settleDuration > 0) {
-      route.push({
-        ...settle,
-        id: `${settle.id}${suffix}`,
-        durationSeconds: settleDuration,
-      });
-    }
-    const quietSeconds = middleSeconds - settleDuration;
-    if (quietSeconds > 0 && quiet.length > 0) {
-      let allocated = 0;
-      quiet.forEach((step, index) => {
-        const durationSeconds =
-          index === quiet.length - 1
-            ? quietSeconds - allocated
-            : Math.floor(quietSeconds / quiet.length);
-        allocated += durationSeconds;
-        if (durationSeconds > 0) {
-          route.push({
-            ...step,
-            id: `${step.id}${suffix}`,
-            durationSeconds,
-          });
-        }
-      });
-    }
-  }
-
-  const templateReturn = template.at(-1)!;
-  route.push({
-    ...templateReturn,
-    id: `${templateReturn.id}${suffix}`,
-    action:
-      "Make your way back at an easy pace. The original break boundary is unchanged.",
-    spokenCue:
-      "Return phase. Make your way back at an easy pace. The original break boundary is unchanged.",
-    durationSeconds: returnDuration,
-  });
+  );
+  const destination =
+    route.find(
+      (step) =>
+        step.station.id !== "comfortable-pause" &&
+        step.station.id !== "desk-return",
+    )?.station ?? null;
   return { route, destination };
 }
 

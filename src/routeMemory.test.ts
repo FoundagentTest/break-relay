@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildExtension, buildRoute, STATION_PRESETS } from "./data";
+import {
+  buildExtension,
+  buildNoTravelRoute,
+  buildRoute,
+  STATION_PRESETS,
+} from "./data";
 import {
   completeSession,
   createSession,
@@ -14,6 +19,7 @@ import {
   loadRouteMemory,
   MAX_ROUTE_HISTORY,
   ROUTE_MEMORY_STORAGE_KEY,
+  routeMemoryContextSteps,
   saveRouteMemory,
 } from "./routeMemory";
 import type {
@@ -271,11 +277,42 @@ describe("local route memory", () => {
       step.stepId.includes("-arrive"),
     )?.used).toBe(false);
     expect(entry?.steps.find((step) =>
-      step.stepId.endsWith("quiet-1"),
+      step.stepId.endsWith("-quiet"),
     )?.used).toBe(true);
-    expect(entry?.steps.find((step) =>
-      step.stepId.endsWith("quiet-2"),
-    )?.used).toBe(false);
+    expect(
+      entry?.steps.filter((step) => step.stepId.endsWith("-quiet")),
+    ).toHaveLength(1);
+  });
+
+  it("does not create learning evidence from a generated no-travel fallback", () => {
+    const route = buildNoTravelRoute("noise", 7, "any");
+    const session = completeSession(
+      createSession({
+        route,
+        durationMinutes: 7,
+        audioEnabled: false,
+        keepAwake: false,
+        routeContext: {
+          feeling: "noise",
+          spaceMode: "any",
+          steps: routeMemoryContextSteps(route),
+        },
+        now: 1_000,
+        id: "fallback-only",
+      }),
+      false,
+      421_000,
+    );
+
+    expect(routeMemoryContextSteps(route)).toEqual([]);
+    expect(
+      createRouteHistoryEntry(
+        session,
+        { feeling: "noise", spaceMode: "any" },
+        "useful",
+        422_000,
+      ),
+    ).toBeNull();
   });
 });
 
@@ -316,8 +353,11 @@ describe("adaptive route assembly", () => {
   });
 
   it("weights explicit feedback most in a similar context", () => {
-    const targetRoute = buildRoute([stations[0]], "noise", 5, 2);
-    const preferredAction = targetRoute[0].action;
+    const targetRoute = buildRoute([stations[2]], "noise", 5, 2);
+    const targetStationId = stations[2].id;
+    const preferredAction = targetRoute.find(
+      (step) => step.phase === "arrive",
+    )!.action;
     const neutralRecent = historyEntry({
       id: "recent-other",
       route: buildRoute([stations[1]], "noise", 5, 9),
@@ -360,7 +400,9 @@ describe("adaptive route assembly", () => {
           spaceMode,
         });
         const target = route.find(
-          (step) => step.station.id === stations[0].id,
+          (step) =>
+            step.phase === "arrive" &&
+            step.station.id === targetStationId,
         );
         if (target) stationCount += 1;
         if (target?.action === preferredAction) actionCount += 1;
@@ -445,5 +487,39 @@ describe("adaptive route assembly", () => {
         spaceMode: "any",
       }),
     );
+  });
+
+  it("gives skipped real actions a small negative weight without removing them", () => {
+    const targetRoute = buildRoute([stations[2]], "noise", 5, 5);
+    const skippedHistory = Array.from({ length: 10 }, (_, index) => {
+      const entry = historyEntry({
+        id: `skipped-${index}`,
+        route: targetRoute,
+        outcome: "useful",
+        completedAt: index,
+      });
+      return {
+        ...entry,
+        steps: entry.steps.map((step) => ({
+          ...step,
+          used: false,
+          skipped: true,
+        })),
+      };
+    });
+    const count = (history: RouteHistoryEntry[]) =>
+      Array.from({ length: 120 }, (_, seed) =>
+        buildRoute(stations, "noise", 5, seed, {
+          history,
+          spaceMode: "any",
+        }).some(
+          (step) =>
+            step.phase === "arrive" &&
+            step.station.id === stations[2].id,
+        ),
+      ).filter(Boolean).length;
+
+    expect(count(skippedHistory)).toBeLessThan(count([]));
+    expect(count(skippedHistory)).toBeGreaterThan(0);
   });
 });

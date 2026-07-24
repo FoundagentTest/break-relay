@@ -1,38 +1,53 @@
-# Restorative route composition
+# Route composition invariants
 
-A relay is a sparse sequence of phases, not a list of equally sized stops:
+Break Relay treats saved stations as individually reachable places, not as a
+topology. The composer never infers adjacency or adds an unsaved destination.
 
-1. `move` leaves or turns away from the screen toward one configured,
-   mode-safe station.
-2. `arrive` gives that station one bounded, concrete light action.
-3. `quiet` stays at the same view, nature, or rest station. Seven- and
-   ten-minute relays divide this time into two distinct prompts at the same
-   place.
-4. `return` starts 70 seconds before the boundary in a few-rooms route,
-   50 seconds before it in one-room mode, and 40 seconds before it in
-   low-movement mode.
+## Arc policy
 
-Water, threshold, movement, and custom stations never receive a padded quiet
-hold. If the selected station cannot naturally carry quiet attention, a short
-`settle` phase asks the user to choose any comfortable nearby position or turn
-where they are; no layout or unconfigured destination is invented. The
-remaining quiet uses that generic pause and is excluded from route learning.
+- Five-minute routes use one real carrying place when possible.
+- Seven-minute routes in an unconstrained space use up to two complementary
+  places.
+- Ten-minute routes use up to three places in an unconstrained space and up to
+  two in a one-room space.
+- Low-movement routes use one place at every boundary.
+- When a configured view, nature, or rest station is available, it is the final
+  quiet carrier. Active stations such as water, movement, thresholds, and
+  custom stops can lead into it.
+- When no real quiet carrier is available, real action stops may still form a
+  sparse arc, followed by one generated no-travel phase. Generated phases never
+  enter route learning.
 
-The phase durations always sum to the selected 5-, 7-, or 10-minute boundary.
-Only one configured destination is used in a relay, which avoids guessing
-physical adjacency or creating back-and-forth. Station variety happens across
-relays through local history.
+Each route has one explicit return window and sums exactly to the selected
+5/7/10-minute boundary.
 
-Active-session schema version 4 adds the phase name. Versions 1–3 migrate in
-place: legacy station steps become `arrive`, legacy return and extension steps
-keep their role, and their original deadlines are not rewritten.
+## Live recomposition
 
-Station safety is reconciled before route composition. Changing the space mode
-removes selected presets that do not declare support for the new mode, reports
-what changed, and requires three safe replacements before setup can continue.
-Loaded preferences receive the same filter before the app decides that a
-returning route is launch-ready, so an older incompatible selection returns to
-setup instead of failing during the one-action launch. New custom places are
-scoped to the movement mode in which the user adds them; a custom place added
-in low-movement mode may be reused in broader modes, but the reverse is not
-assumed.
+Rejecting a current or upcoming station excludes it for that session only.
+Recomposition uses the exact remaining seconds and retains the original
+deadline. When the user has already reached a still-available station, a
+replacement can begin there without a redundant travel cue. Paused sessions
+use the instant at which the pause began as their schedule reference, so a
+reroute does not consume or add paused time.
+
+## Learning
+
+Only real `arrive` and real `quiet` phases are learnable. A phase becomes used
+only when the session clock actually reaches it. Explicit skips receive a small
+negative weight; completion feedback supplies the stronger contextual weight.
+Phases removed by temporary availability rerouting remain neutral, and
+generated no-travel, return, move, and extension phases do not pollute station
+or action preferences.
+
+## Compatibility and safety
+
+Active-session schema version 7 stores the exact route, originating space
+snapshot, temporary exclusions, reroute count, learning context, and pause
+clock. Versions 1–6 still migrate in place: legacy station steps become
+`arrive`, legacy return and extension steps keep their roles, and existing
+deadlines are not rewritten.
+
+Movement-mode compatibility is reconciled before composition. Saved stations
+that do not support the active mode remain stored in their named relay space
+but are not eligible for that break. New custom places keep the movement scope
+in which the user added them; broader reachability is never inferred.

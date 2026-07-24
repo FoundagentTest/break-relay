@@ -73,6 +73,37 @@ describe("private break handoff payload", () => {
     ).toBe(7 * 60);
   });
 
+  it("round-trips an exact eight-phase ten-minute multi-place arc", () => {
+    const base = preparedBreak();
+    const route = buildRoute(
+      base.space.stations,
+      "noise",
+      10,
+      64,
+      {
+        spaceId: base.space.id,
+        spaceMode: "any",
+      },
+    );
+    const handoff = createBreakHandoff({
+      space: base.space,
+      feeling: "noise",
+      durationMinutes: 10,
+      route,
+      eligibleStations: base.space.stations,
+      unavailableStationIds: [],
+      now: base.createdAt,
+    });
+    const encoded = encodeBreakHandoff(handoff);
+
+    expect(route).toHaveLength(8);
+    expect(encoded.length).toBeLessThanOrEqual(MAX_HANDOFF_ENCODED_CHARS);
+    expect(decodeBreakHandoff(encoded, handoff.createdAt + 1)).toEqual({
+      status: "ready",
+      handoff,
+    });
+  });
+
   it("keeps private data in the fragment and scrubs it before returning the captured payload", () => {
     const handoff = preparedBreak();
     const url = handoffUrl(handoff, "https://break-relay.test/");

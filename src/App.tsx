@@ -47,6 +47,7 @@ import {
   clearRouteMemory,
   createRouteHistoryEntry,
   loadRouteMemory,
+  routeMemoryContextSteps,
   ROUTE_MEMORY_STORAGE_KEY,
   saveRouteMemory,
 } from "./routeMemory";
@@ -724,9 +725,10 @@ function TuneSetup({
             <p className="eyebrow">ONE LAST CHOICE</p>
             <h1>Shape this break around right now.</h1>
             <p className="lede">
-              Relay will choose one meaningful place, a light arrival action,
-              quiet that fits the setting, and enough time to return. It won’t
-              ask you to keep checking the screen.
+              Relay will choose a sparse path through the places that fit this
+              break, let a real quiet-capable place carry the time when one is
+              available, and keep enough time to return. It won’t ask you to
+              keep checking the screen.
             </p>
           </div>
           <StepRail current={2} />
@@ -1523,7 +1525,8 @@ function HandoffSource({
                 {handoff.route.map((step) => (
                   <li key={step.id}>
                     <span>{phaseKicker(step.phase)}</span>
-                    <strong>{step.station.name}</strong>
+                    <strong>{phasePreviewTitle(step)}</strong>
+                    <small>{formatPhaseDuration(step.durationSeconds)}</small>
                   </li>
                 ))}
               </ol>
@@ -1668,8 +1671,8 @@ function HandoffReceive({
               {handoff.route.map((step) => (
                 <li key={step.id}>
                   <span>{phaseKicker(step.phase)}</span>
-                  <strong>{step.station.name}</strong>
-                  <small>{Math.ceil(step.durationSeconds / 60)} min</small>
+                  <strong>{phasePreviewTitle(step)}</strong>
+                  <small>{formatPhaseDuration(step.durationSeconds)}</small>
                 </li>
               ))}
             </ol>
@@ -2332,14 +2335,36 @@ function formatBoundary(seconds: number) {
 
 function phaseKicker(phase: ActiveSession["route"][number]["phase"]) {
   const labels = {
-    move: "MOVE TO",
-    arrive: "ARRIVE & DO",
-    quiet: "STAY HERE",
+    move: "NEXT PLACE",
+    arrive: "LAND HERE",
+    quiet: "QUIET CARRY",
     settle: "SETTLE AWAY",
-    return: "RETURN CUE",
+    return: "RETURN WINDOW",
     extension: "QUIET EXTENSION",
   };
   return labels[phase];
+}
+
+function phasePreviewTitle(step: ActiveSession["route"][number]) {
+  if (step.phase === "move") return `Go to ${step.station.name}`;
+  if (step.phase === "arrive") return `At ${step.station.name}`;
+  if (step.phase === "quiet") {
+    return step.station.id === "comfortable-pause"
+      ? "No-travel pause"
+      : `Quiet at ${step.station.name}`;
+  }
+  if (step.phase === "return") return "Return window";
+  if (step.phase === "extension") return "Two quiet minutes";
+  return step.station.name;
+}
+
+function formatPhaseDuration(seconds: number) {
+  if (seconds < 60) return `${seconds} sec`;
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return remainder === 0
+    ? `${minutes} min`
+    : `${minutes} min ${remainder} sec`;
 }
 
 function phaseHeader(
@@ -2585,11 +2610,10 @@ function RelaySession({
     else announce(next);
   }
 
-  function markPlaceUnavailable() {
+  function markPlaceUnavailable(rejectedStationId: string) {
     window.speechSynthesis?.cancel?.();
     const current = sessionRef.current;
     const currentStep = current.route[current.currentStepIndex];
-    const rejectedStationId = currentStep.station.id;
     const excluded = new Set([
       ...current.unavailableStationIds,
       rejectedStationId,
@@ -2608,6 +2632,14 @@ function RelaySession({
         revision,
         spaceMode:
           current.routeContext?.spaceMode ?? fallbackSpaceMode,
+        startingStationId:
+          currentStep.station.id !== rejectedStationId &&
+          ["arrive", "quiet"].includes(currentStep.phase) &&
+          current.eligibleStations.some(
+            (station) => station.id === currentStep.station.id,
+          )
+            ? currentStep.station.id
+            : undefined,
       },
     );
     const next = recomposeSession(
@@ -2618,6 +2650,26 @@ function RelaySession({
     if (next === current) return;
     announce(next);
   }
+
+  const routeStations = [
+    ...new Map(
+      session.route
+        .slice(session.currentStepIndex)
+        .filter((item) =>
+          session.eligibleStations.some(
+            (station) => station.id === item.station.id,
+          ),
+        )
+        .filter(
+          (item) =>
+            !session.unavailableStationIds.includes(item.station.id),
+        )
+        .map((item) => [item.station.id, item.station]),
+    ).values(),
+  ];
+  const upcomingStations = routeStations.filter(
+    (station) => station.id !== step.station.id,
+  );
 
   function endEarly() {
     window.speechSynthesis?.cancel?.();
@@ -2713,7 +2765,7 @@ function RelaySession({
             session.rerouteCount < session.eligibleStations.length && (
               <button
                 className="control-button control-button--availability"
-                onClick={markPlaceUnavailable}
+                onClick={() => markPlaceUnavailable(step.station.id)}
                 type="button"
               >
                 <span>
@@ -2735,6 +2787,27 @@ function RelaySession({
             </button>
           )}
         </div>
+        {upcomingStations.length > 0 &&
+          session.rerouteCount < session.eligibleStations.length && (
+            <details className="upcoming-availability">
+              <summary>One of the next places is unavailable</summary>
+              <p>
+                Choose only the place that changed. Relay will rebuild the
+                remaining path inside the same deadline.
+              </p>
+              <div>
+                {upcomingStations.map((station) => (
+                  <button
+                    key={station.id}
+                    onClick={() => markPlaceUnavailable(station.id)}
+                    type="button"
+                  >
+                    {station.name} is unavailable
+                  </button>
+                ))}
+              </div>
+            </details>
+          )}
         {session.keepAwake && (
           <p className={`wake-status wake-status--${wakeStatus}`} role="status">
             {wakeStatus === "held"
@@ -3198,19 +3271,7 @@ export default function App() {
         spaceId: sourceSpace.id,
         feeling: nextPreferences.feeling,
         spaceMode: sourceSpace.spaceMode,
-        steps: route
-          .filter(
-            (step) =>
-              step.phase === "arrive" ||
-              (step.phase === "quiet" &&
-                step.station.id !== "comfortable-pause"),
-          )
-          .map((step) => ({
-            stepId: step.id,
-            stationId: step.station.id,
-            stationName: step.station.name,
-            action: step.action,
-          })),
+        steps: routeMemoryContextSteps(route),
       },
       eligibleStations: prepared.eligibleStations,
       unavailableStationIds: prepared.unavailableStationIds,
@@ -3259,19 +3320,7 @@ export default function App() {
         spaceId: handoff.space.id,
         feeling: handoff.feeling,
         spaceMode: handoff.space.spaceMode,
-        steps: handoff.route
-          .filter(
-            (step) =>
-              step.phase === "arrive" ||
-              (step.phase === "quiet" &&
-                step.station.id !== "comfortable-pause"),
-          )
-          .map((step) => ({
-            stepId: step.id,
-            stationId: step.station.id,
-            stationName: step.station.name,
-            action: step.action,
-          })),
+        steps: routeMemoryContextSteps(handoff.route),
       },
       eligibleStations: structuredClone(handoff.eligibleStations),
       unavailableStationIds: [...handoff.unavailableStationIds],

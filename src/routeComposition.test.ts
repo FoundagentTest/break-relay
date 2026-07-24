@@ -19,20 +19,22 @@ function totalSeconds(route: RouteStep[]) {
   return route.reduce((total, phase) => total + phase.durationSeconds, 0);
 }
 
-function configuredDestinationIds(route: RouteStep[]) {
-  return [
-    ...new Set(
-      route
-        .filter((phase) =>
-          ["move", "arrive"].includes(phase.phase),
-        )
-        .map((phase) => phase.station.id),
-    ),
-  ];
+function realArrivals(route: RouteStep[]) {
+  return route.filter((step) => step.phase === "arrive");
 }
 
-describe("restorative phase composition", () => {
-  it("is deterministic and exact for every need, duration, mode, and 3–6 station count", () => {
+function expectedPlaces(
+  duration: (typeof durations)[number],
+  mode: SpaceMode,
+  eligible: number,
+) {
+  if (duration === 5 || mode === "seated") return 1;
+  if (mode === "small") return duration === 10 ? Math.min(2, eligible) : 1;
+  return Math.min(duration === 10 ? 3 : 2, eligible);
+}
+
+describe("purposeful relay composition", () => {
+  it("is deterministic, exact, mode-safe, and sparse across every boundary and movement mode", () => {
     for (const mode of modes) {
       const available = presetsFor(mode);
       for (const stationCount of [3, 4, 5, 6]) {
@@ -52,28 +54,36 @@ describe("restorative phase composition", () => {
               seed,
               { spaceMode: mode },
             );
+
             expect(
               buildRoute(stations, feeling, duration, seed, {
                 spaceMode: mode,
               }),
             ).toEqual(route);
             expect(totalSeconds(route)).toBe(duration * 60);
-            expect(route[0].phase).toBe("move");
-            expect(route[1].phase).toBe("arrive");
-            expect(route.at(-1)?.phase).toBe("return");
-            expect(route.filter((phase) => phase.phase === "move")).toHaveLength(
+            expect(route.at(-1)).toMatchObject({
+              phase: "return",
+              station: { id: "desk-return", name: "Return window" },
+            });
+            expect(realArrivals(route)).toHaveLength(
+              expectedPlaces(duration, mode, stations.length),
+            );
+            expect(route.filter((step) => step.phase === "quiet")).toHaveLength(
               1,
             );
-            expect(configuredDestinationIds(route)).toHaveLength(1);
+            expect(new Set(route.map((step) => step.id)).size).toBe(route.length);
             expect(
               route
-                .filter((phase) => phase.station.id !== "comfortable-pause")
+                .filter(
+                  (step) =>
+                    step.station.id !== "comfortable-pause" &&
+                    step.station.id !== "desk-return",
+                )
                 .every(
-                  (phase) =>
-                    phase.phase === "return" ||
+                  (step) =>
                     stations.some(
-                      (station) => station.id === phase.station.id,
-                    ),
+                      (station) => station.id === step.station.id,
+                    ) && step.station.modes.includes(mode),
                 ),
             ).toBe(true);
           }
@@ -82,77 +92,72 @@ describe("restorative phase composition", () => {
     }
   });
 
-  it("keeps transition, action, quiet, and return phases in sensible ranges", () => {
-    const expectedReturn: Record<SpaceMode, number> = {
-      any: 70,
-      small: 50,
-      seated: 40,
-    };
+  it("turns the reported Water + Window + Hallway case into a quick-to-quiet relay", () => {
+    const stations = ["window", "water", "hallway"].map(
+      (id) => STATION_PRESETS.find((station) => station.id === id)!,
+    );
+
+    const seven = buildRoute(stations, "noise", 7, 2026);
+    const sevenArrivals = realArrivals(seven);
+    expect(sevenArrivals).toHaveLength(2);
+    expect(["water", "hallway"]).toContain(sevenArrivals[0].station.id);
+    expect(sevenArrivals[1].station.id).toBe("window");
+    expect(seven.filter((step) => step.phase === "quiet")).toEqual([
+      expect.objectContaining({
+        station: expect.objectContaining({ id: "window" }),
+      }),
+    ]);
+    expect(
+      seven.some((step) => step.station.id === "comfortable-pause"),
+    ).toBe(false);
+    expect(totalSeconds(seven)).toBe(420);
+
+    const ten = buildRoute(stations, "noise", 10, 2026);
+    expect(realArrivals(ten).map((step) => step.station.id).at(-1)).toBe(
+      "window",
+    );
+    expect(new Set(realArrivals(ten).map((step) => step.station.id))).toEqual(
+      new Set(["window", "water", "hallway"]),
+    );
+    expect(totalSeconds(ten)).toBe(600);
+  });
+
+  it("keeps five-minute and constrained routes appropriately sparse", () => {
     for (const mode of modes) {
       const stations = presetsFor(mode).slice(0, 6);
-      for (const duration of durations) {
-        const route = buildRoute(stations, "eyes", duration, 212, {
-          spaceMode: mode,
-        });
-        const move = route.find((phase) => phase.phase === "move")!;
-        const arrive = route.find((phase) => phase.phase === "arrive")!;
-        const quiet = route.filter((phase) => phase.phase === "quiet");
-        const returning = route.at(-1)!;
-
-        expect(move.durationSeconds).toBeGreaterThanOrEqual(15);
-        expect(move.durationSeconds).toBeLessThanOrEqual(35);
-        expect(arrive.durationSeconds).toBeGreaterThanOrEqual(35);
-        expect(arrive.durationSeconds).toBeLessThanOrEqual(75);
-        expect(quiet).toHaveLength(duration === 5 ? 1 : 2);
-        expect(
-          quiet.every(
-            (phase) =>
-              phase.durationSeconds >= 90 &&
-              phase.durationSeconds <= 260,
-          ),
-        ).toBe(true);
-        expect(returning.durationSeconds).toBe(expectedReturn[mode]);
-        expect(
-          totalSeconds(route.slice(0, -1)),
-        ).toBe(duration * 60 - expectedReturn[mode]);
-      }
+      const five = buildRoute(stations, "eyes", 5, 18, {
+        spaceMode: mode,
+      });
+      expect(realArrivals(five)).toHaveLength(1);
+      expect(five.filter((step) => step.phase === "move")).toHaveLength(1);
     }
+
+    const seated = presetsFor("seated").slice(0, 6);
+    for (const duration of durations) {
+      const route = buildRoute(seated, "stiff", duration, 91, {
+        spaceMode: "seated",
+      });
+      expect(realArrivals(route)).toHaveLength(1);
+      expect(route[0].action).toContain("staying seated if you prefer");
+      expect(totalSeconds(route)).toBe(duration * 60);
+    }
+
+    const small = presetsFor("small").slice(0, 6);
+    expect(
+      realArrivals(
+        buildRoute(small, "stiff", 7, 91, { spaceMode: "small" }),
+      ),
+    ).toHaveLength(1);
+    expect(
+      realArrivals(
+        buildRoute(small, "stiff", 10, 91, { spaceMode: "small" }),
+      ),
+    ).toHaveLength(2);
   });
 
-  it("uses a same-place quiet follow-up without relabeling it as another destination", () => {
-    const view = STATION_PRESETS.find(
-      (station) => station.id === "window",
-    )!;
-    const plant = STATION_PRESETS.find(
-      (station) => station.id === "plant",
-    )!;
-    const rest = STATION_PRESETS.find(
-      (station) => station.id === "quiet-corner",
-    )!;
-
-    for (const duration of [7, 10] as const) {
-      const route = buildRoute(
-        [view, plant, rest],
-        "noise",
-        duration,
-        44,
-      );
-      const arrival = route.find((phase) => phase.phase === "arrive")!;
-      const quiet = route.filter((phase) => phase.phase === "quiet");
-
-      expect(quiet).toHaveLength(2);
-      expect(
-        quiet.every((phase) => phase.station.id === arrival.station.id),
-      ).toBe(true);
-      expect(quiet[0].action).not.toBe(quiet[1].action);
-      expect(quiet[0].spokenCue).toMatch(/^Stay at /);
-      expect(route.some((phase) => phase.phase === "settle")).toBe(false);
-    }
-  });
-
-  it("never pads quick custom-only or utility actions into the quiet hold", () => {
+  it("uses one honest no-travel carry only when no configured quiet carrier exists", () => {
     const customStations: Station[] = Array.from(
-      { length: 6 },
+      { length: 4 },
       (_, index) => ({
         id: `custom-${index}`,
         name: `Custom place ${index + 1}`,
@@ -162,87 +167,42 @@ describe("restorative phase composition", () => {
         custom: true,
       }),
     );
-    const utilityStations = STATION_PRESETS.filter((station) =>
-      ["water", "doorway", "clear-floor"].includes(station.id),
+    const utilityStations = ["water", "doorway", "clear-floor", "hallway"].map(
+      (id) => STATION_PRESETS.find((station) => station.id === id)!,
     );
 
-    const cases: Array<{
-      stations: Station[];
-      mode: SpaceMode;
-    }> = [
-      ...modes.flatMap((mode) =>
-        [3, 4, 5, 6].map((count) => ({
-          stations: customStations.slice(0, count),
-          mode,
-        })),
-      ),
-      { stations: utilityStations, mode: "any" },
-    ];
-
-    for (const { stations, mode } of cases) {
+    for (const stations of [customStations, utilityStations]) {
       for (const duration of durations) {
-        const route = buildRoute(stations, "air", duration, 83, {
-          spaceMode: mode,
+        const route = buildRoute(stations, "air", duration, 83);
+        const fallback = route.filter(
+          (step) => step.station.id === "comfortable-pause",
+        );
+        expect(fallback).toHaveLength(1);
+        expect(fallback[0]).toMatchObject({
+          phase: "quiet",
+          station: { name: "No-travel pause" },
         });
-        const arrival = route.find((phase) => phase.phase === "arrive")!;
-        const settle = route.find((phase) => phase.phase === "settle")!;
-        const quiet = route.filter((phase) => phase.phase === "quiet");
-
-        expect(arrival.durationSeconds).toBeLessThanOrEqual(75);
-        expect(settle.station.id).toBe("comfortable-pause");
-        expect(settle.durationSeconds).toBeLessThanOrEqual(25);
-        expect(
-          quiet.every(
-            (phase) => phase.station.id === "comfortable-pause",
-          ),
-        ).toBe(true);
-        expect(
-          route.filter((phase) => phase.phase === "move"),
-        ).toHaveLength(1);
+        expect(fallback[0].spokenCue).toContain(
+          "No quiet-capable place remains",
+        );
+        expect(totalSeconds(route)).toBe(duration * 60);
       }
     }
   });
 
-  it("prefers an appropriate quiet-capable station in a lopsided set", () => {
-    const stations = [
-      STATION_PRESETS.find((station) => station.id === "water")!,
-      STATION_PRESETS.find((station) => station.id === "doorway")!,
-      STATION_PRESETS.find((station) => station.id === "clear-floor")!,
-      STATION_PRESETS.find((station) => station.id === "window")!,
-      STATION_PRESETS.find((station) => station.id === "hallway")!,
-      STATION_PRESETS.find((station) => station.id === "outside")!,
-    ];
-    for (const feeling of feelings) {
-      const route = buildRoute(stations, feeling, 10, 14);
-      const arrival = route.find((phase) => phase.phase === "arrive")!;
-      expect(arrival.station.id).toBe("window");
-      expect(route.some((phase) => phase.phase === "settle")).toBe(false);
-    }
-  });
+  it("makes every stage cue distinct and leaves one explicit return window", () => {
+    const stations = ["water", "hallway", "window"].map(
+      (id) => STATION_PRESETS.find((station) => station.id === id)!,
+    );
+    const route = buildRoute(stations, "noise", 10, 54);
 
-  it("gives one-room and low-movement routes the complete arc in mode-safe language", () => {
-    for (const mode of ["small", "seated"] as const) {
-      const stations = presetsFor(mode).slice(0, 6);
-      const route = buildRoute(stations, "stiff", 7, 91, {
-        spaceMode: mode,
-      });
-      expect(route.map((phase) => phase.phase)).toEqual([
-        "move",
-        "arrive",
-        "quiet",
-        "quiet",
-        "return",
-      ]);
-      expect(
-        route
-          .filter((phase) => phase.phase !== "return")
-          .every((phase) => phase.station.modes.includes(mode)),
-      ).toBe(true);
-      if (mode === "seated") {
-        expect(route[0].action).toContain("Stay seated if you prefer");
-      } else {
-        expect(route[0].action).toContain("within this room");
-      }
-    }
+    expect(new Set(route.map((step) => step.spokenCue)).size).toBe(route.length);
+    expect(new Set(route.map((step) => step.action)).size).toBe(route.length);
+    expect(route.filter((step) => step.phase === "return")).toHaveLength(1);
+    expect(route.at(-1)?.durationSeconds).toBe(70);
+    expect(route.at(-1)?.spokenCue).toContain("break boundary");
+    expect(
+      route.find((step) => step.phase === "quiet")?.spokenCue,
+    ).toContain("No screen check is needed");
   });
 });

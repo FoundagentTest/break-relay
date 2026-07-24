@@ -384,7 +384,7 @@ describe("account-free device handoff", () => {
     await user.click(
       screen.getByRole("button", { name: "Place unavailable" }),
     );
-    expect(screen.getByText("Comfortable pause")).toBeVisible();
+    expect(screen.getByText("No-travel pause")).toBeVisible();
     const fallback = JSON.parse(
       localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
     );

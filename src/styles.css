@@ -2296,6 +2296,41 @@ a:focus-visible {
   color: #ffc4b2;
 }
 
+.upcoming-availability {
+  width: min(620px, 100%);
+  margin-top: 16px;
+  padding: 15px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.upcoming-availability summary {
+  cursor: pointer;
+  font-size: 0.68rem;
+  font-weight: 750;
+}
+
+.upcoming-availability p {
+  margin: 12px 0;
+  color: rgba(255, 255, 255, 0.52);
+  font-size: 0.62rem;
+  line-height: 1.5;
+}
+
+.upcoming-availability div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.upcoming-availability button {
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgba(227, 107, 75, 0.62);
+  color: #ffc4b2;
+  font-size: 0.62rem;
+}
+
 .session-footnote {
   margin: 18px 0 0;
   color: rgba(255, 255, 255, 0.42);
@@ -2709,6 +2744,10 @@ a:focus-visible {
   grid-template-columns: 100px 1fr;
 }
 
+.handoff-summary-card li {
+  grid-template-columns: 100px 1fr auto;
+}
+
 .handoff-summary-card li span,
 .receive-preview li span {
   color: var(--coral-dark);
@@ -2722,6 +2761,13 @@ a:focus-visible {
   font-family: "Instrument Serif", Georgia, serif;
   font-size: 1.12rem;
   font-weight: 400;
+}
+
+.handoff-summary-card li small,
+.receive-preview li small {
+  color: var(--ink-soft);
+  font-size: 0.59rem;
+  white-space: nowrap;
 }
 
 .handoff-link-card {
@@ -2833,11 +2879,6 @@ a:focus-visible {
 
 .receive-preview li {
   grid-template-columns: 94px 1fr auto;
-}
-
-.receive-preview li small {
-  color: var(--ink-soft);
-  font-size: 0.59rem;
 }
 
 .receive-capabilities {
@@ -3598,11 +3639,13 @@ a:focus-visible {
     width: 100%;
   }
 
+  .handoff-summary-card li,
   .receive-preview li {
     align-items: start;
     grid-template-columns: 82px 1fr;
   }
 
+  .handoff-summary-card li small,
   .receive-preview li small {
     grid-column: 2;
   }

@@ -103,7 +103,7 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("button", { name: "Skip this cue" }),
     );
-    expect(screen.getByText("ARRIVE & DO")).toBeVisible();
+    expect(screen.getByText("LAND HERE")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "End early" }));
 
     expect(
@@ -184,12 +184,12 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: /Start and step away/ }),
     );
 
-    expect(screen.getByText("MOVE TO")).toBeVisible();
+    expect(screen.getByText("NEXT PLACE")).toBeVisible();
     const active = JSON.parse(
       localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
     );
     expect(active.status).toBe("active");
-    expect(active.route[0].action).toContain("Stay seated if you prefer");
+    expect(active.route[0].action).toContain("staying seated if you prefer");
     expect(
       active.route
         .filter(
@@ -396,7 +396,7 @@ describe("Break Relay", () => {
 
     render(<App />);
 
-    expect(screen.getByText("STAY HERE")).toBeVisible();
+    expect(screen.getByText("QUIET CARRY")).toBeVisible();
     expect(
       screen.getByText(`Phase ${quietIndex + 1} of ${route.length}`),
     ).toBeVisible();
@@ -406,11 +406,11 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("button", { name: "Resume this relay" }),
     );
-    expect(screen.getByText("STAY HERE")).toBeVisible();
+    expect(screen.getByText("QUIET CARRY")).toBeVisible();
     expect(screen.getByText(/PHASE \d+ OF \d+/)).toBeVisible();
     const utterance = vi.mocked(window.speechSynthesis.speak).mock
       .calls[0][0] as SpeechSynthesisUtterance;
-    expect(utterance.text).toMatch(/^Stay at /);
+    expect(utterance.text).toMatch(/^Quiet carry at /);
     expect(utterance.text).not.toContain("Move phase");
   });
 
@@ -589,7 +589,8 @@ describe("Break Relay", () => {
     });
     const moved = skipStep(started, 2_000);
     const skipped = skipStep(moved, 3_000);
-    saveSession(completeSession(skipped, true, 3_000));
+    const reachedNextRealAction = skipStep(skipped, 4_000);
+    saveSession(completeSession(reachedNextRealAction, true, 4_000));
 
     render(<App />);
     expect(screen.getByText(/Stopping early is a complete choice, not a rating/i)).toBeVisible();
@@ -826,13 +827,15 @@ describe("Break Relay", () => {
         screen.getByText(/device declined the wake request/i),
       ).toBeVisible(),
     );
-    expect(
-      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
-    ).toMatchObject({
-      status: "active",
-      wakeLockFailed: true,
-      keepAwake: true,
-    });
+    await waitFor(() =>
+      expect(
+        JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
+      ).toMatchObject({
+        status: "active",
+        wakeLockFailed: true,
+        keepAwake: true,
+      }),
+    );
     expect(
       JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").launchNeedsReview,
     ).toBe(true);
@@ -1118,7 +1121,7 @@ describe("Break Relay", () => {
     }
 
     expect(
-      screen.getByRole("heading", { name: "Comfortable pause" }),
+      screen.getByRole("heading", { name: "No-travel pause" }),
     ).toBeVisible();
     expect(
       screen.queryByRole("button", { name: "Place unavailable" }),
@@ -1140,6 +1143,63 @@ describe("Break Relay", () => {
     expect(finished.eligibleStations).toEqual([]);
     expect(finished.unavailableStationIds).toEqual([]);
   });
+
+  it("lets a paused relay reject an upcoming real place inside the same deadline", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: ["window", "water", "hallway"].map((id) =>
+          STATION_PRESETS.find((station) => station.id === id),
+        ),
+        feeling: "noise",
+        duration: 10,
+        spaceMode: "any",
+        audioEnabled: false,
+        keepAwake: false,
+        alwaysReviewLaunch: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: { speech: true, wakeLock: false },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    const original = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+
+    await user.click(
+      screen.getByText("One of the next places is unavailable"),
+    );
+    await user.click(
+      screen.getByRole("button", {
+        name: "Window or view is unavailable",
+      }),
+    );
+
+    const rerouted = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(rerouted).toMatchObject({
+      id: original.id,
+      paused: true,
+      pausedAt: original.pausedAt,
+      deadlineAt: original.deadlineAt,
+      rerouteCount: 1,
+    });
+    expect(
+      rerouted.route.some(
+        (step: { station: { id: string } }) =>
+          step.station.id === "window",
+      ),
+    ).toBe(false);
+    expect(rerouted.unavailableStationIds).toContain("window");
+    expect(screen.getByText("Relay paused")).toBeVisible();
+  });
 });
 
 describe("route assembly", () => {
@@ -1153,7 +1213,8 @@ describe("route assembly", () => {
     expect(route.map((step) => step.phase)).toEqual([
       "move",
       "arrive",
-      "quiet",
+      "move",
+      "arrive",
       "quiet",
       "return",
     ]);

@@ -5,15 +5,12 @@ import type {
   SessionRouteContext,
 } from "./types";
 import { initialRelaySpace } from "./spaces";
+import {
+  isLearnableRouteStep,
+  routeMemoryContextSteps,
+} from "./routeMemory";
 
 const SECOND = 1000;
-
-function isLearnableStep(step: RouteStep) {
-  return (
-    step.phase === "arrive" ||
-    (step.phase === "quiet" && step.station.id !== "comfortable-pause")
-  );
-}
 
 function routeDurationMs(route: RouteStep[]) {
   return route.reduce(
@@ -35,7 +32,7 @@ function reachedAt(route: RouteStep[], index: number, existing: string[]) {
   return [
     ...new Set([
       ...existing,
-      ...(step && isLearnableStep(step) ? [step.id] : []),
+      ...(step && isLearnableRouteStep(step) ? [step.id] : []),
     ]),
   ];
 }
@@ -87,7 +84,7 @@ export function createSession({
     skippedStepIds,
     reachedStepIds:
       reachedStepIds ??
-      (isLearnableStep(route[0]) ? [route[0].id] : []),
+      (isLearnableRouteStep(route[0]) ? [route[0].id] : []),
     neutralStepIds,
     eligibleStations,
     unavailableStationIds,
@@ -239,7 +236,7 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
     scheduleReference +
     route[currentStepIndex].durationSeconds * SECOND;
   const skippedStepIds =
-    isLearnableStep(current.route[current.currentStepIndex])
+    isLearnableRouteStep(current.route[current.currentStepIndex])
       ? [
           ...current.skippedStepIds,
           current.route[current.currentStepIndex].id,
@@ -286,14 +283,7 @@ export function recomposeSession(
     current.routeContext?.steps
       .filter((step) => step.stationId === rejectedStationId)
       .map((step) => step.stepId) ?? [];
-  const replacementContextSteps = replacementRoute
-    .filter(isLearnableStep)
-    .map((step) => ({
-      stepId: step.id,
-      stationId: step.station.id,
-      stationName: step.station.name,
-      action: step.action,
-    }));
+  const replacementContextSteps = routeMemoryContextSteps(replacementRoute);
   const existingContext = current.routeContext;
   const contextSteps = [
     ...(existingContext?.steps ?? []),
