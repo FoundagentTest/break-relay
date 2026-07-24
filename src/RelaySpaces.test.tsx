@@ -66,8 +66,8 @@ describe("relay space interactions", () => {
     expect(screen.getByText("Low movement · saved only in this browser")).toBeVisible();
     expect(
       within(
-        screen.getByRole("list", { name: "Saved relay points" }),
-      ).getByText("Window or view"),
+        screen.getByRole("list", { name: "Prepared relay route" }),
+      ).getByText("Quiet at Window or view"),
     ).toBeVisible();
 
     await user.click(
@@ -83,8 +83,8 @@ describe("relay space interactions", () => {
     expect(screen.getByText("1 / 1")).toBeVisible();
     expect(
       within(
-        screen.getByRole("list", { name: "Saved relay points" }),
-      ).getByText("Hallway"),
+        screen.getByRole("list", { name: "Prepared relay route" }),
+      ).getByText("At Hallway"),
     ).toBeVisible();
 
     await user.selectOptions(switcher, home.id);
@@ -139,8 +139,8 @@ describe("relay space interactions", () => {
     ).toHaveDisplayValue("Shared office");
     expect(
       within(
-        screen.getByRole("list", { name: "Saved relay points" }),
-      ).getByText("Water stop"),
+        screen.getByRole("list", { name: "Prepared relay route" }),
+      ).getByText("At Water stop"),
     ).toBeVisible();
 
     await user.click(screen.getByRole("button", { name: "My relay" }));

@@ -1,4 +1,10 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -113,12 +119,31 @@ describe("account-free device handoff", () => {
     localStorage.setItem(STORAGE_KEY, storedPreferences);
 
     render(<App />);
+    const homePreview = within(
+      screen.getByRole("list", { name: "Prepared relay route" }),
+    )
+      .getAllByRole("listitem")
+      .map((item) => ({
+        id: item.dataset.routeStepId,
+        phase: item.dataset.phase,
+        durationSeconds: Number(item.dataset.durationSeconds),
+      }));
     await user.click(
       screen.getByRole("button", { name: /Places available now/ }),
     );
     await user.click(
       screen.getByRole("checkbox", { name: /Window or view/ }),
     );
+    const availablePreview = within(
+      screen.getByRole("list", { name: "Prepared relay route" }),
+    )
+      .getAllByRole("listitem")
+      .map((item) => ({
+        id: item.dataset.routeStepId,
+        phase: item.dataset.phase,
+        durationSeconds: Number(item.dataset.durationSeconds),
+      }));
+    expect(availablePreview).not.toEqual(homePreview);
     await user.click(
       screen.getByRole("button", { name: /Use another device/ }),
     );
@@ -143,6 +168,13 @@ describe("account-free device handoff", () => {
     );
     expect(decoded.status).toBe("ready");
     if (decoded.status === "ready") {
+      expect(
+        decoded.handoff.route.map((step) => ({
+          id: step.id,
+          phase: step.phase,
+          durationSeconds: step.durationSeconds,
+        })),
+      ).toEqual(availablePreview);
       expect(decoded.handoff.space.name).toBe("Window desk");
       expect(decoded.handoff.feeling).toBe("air");
       expect(decoded.handoff.durationMinutes).toBe(5);

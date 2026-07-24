@@ -94,6 +94,13 @@ type Screen =
   | "session"
   | "complete";
 
+interface PreparedRouteSnapshot {
+  compatibleStations: Station[];
+  eligibleStations: Station[];
+  route: ActiveSession["route"];
+  unavailableStationIds: string[];
+}
+
 function Icon({
   name,
   size = 20,
@@ -1084,6 +1091,7 @@ function AppHeader({ onSettings }: { onSettings: () => void }) {
 
 function Home({
   preferences,
+  preparedRoute,
   unavailableNow,
   onAvailabilityChange,
   onChange,
@@ -1094,6 +1102,7 @@ function Home({
   onSpaceSwitch,
 }: {
   preferences: Preferences;
+  preparedRoute: ActiveSession["route"];
   unavailableNow: string[];
   onAvailabilityChange: (stationIds: string[]) => void;
   onChange: (preferences: Preferences) => void;
@@ -1185,10 +1194,10 @@ function Home({
             </div>
             <p className="ready-description">
               {activeStations.length > 0
-                ? `One sparse route drawn from ${activeStations.length} ${
+                ? `This exact relay is drawn from ${activeStations.length} ${
                     activeStations.length === 1 ? "place" : "places"
-                  } available now, with a clear invitation back.`
-                : "No travel is required. This relay will use a comfortable turn-away pause and a clear return cue."}
+                  } available now, with its return time protected.`
+                : "No travel is required. This relay will use one turn-away pause and a clear return window."}
             </p>
             <button
               aria-controls="availability-now"
@@ -1258,18 +1267,23 @@ function Home({
                 )}
               </div>
             )}
-            <ol className="ready-route" aria-label="Saved relay points">
-              {activeStations.slice(0, 4).map((station, index) => (
-                <li key={station.id}>
-                  <span>{index + 1}</span>
-                  {station.name}
+            <ol className="ready-route" aria-label="Prepared relay route">
+              {preparedRoute.map((step, index) => (
+                <li
+                  className={`ready-route__step ready-route__step--${step.phase}`}
+                  data-duration-seconds={step.durationSeconds}
+                  data-phase={step.phase}
+                  data-route-step-id={step.id}
+                  key={step.id}
+                >
+                  <span aria-hidden="true">{index + 1}</span>
+                  <div>
+                    <small>{phaseKicker(step.phase)}</small>
+                    <strong>{phasePreviewTitle(step)}</strong>
+                  </div>
+                  <em>{formatPhaseDuration(step.durationSeconds)}</em>
                 </li>
               ))}
-              {activeStations.length > 4 && (
-                <li className="ready-route__more">
-                  +{activeStations.length - 4} in rotation
-                </li>
-              )}
             </ol>
             <button
               className="primary-button primary-button--coral primary-button--wide start-button"
@@ -2997,6 +3011,9 @@ export default function App() {
   const [interruptedCompletion, setInterruptedCompletion] = useState(
     recovered?.status === "complete",
   );
+  const [routePreviewSeed] = useState(() => Date.now());
+  const [preparedForLaunch, setPreparedForLaunch] =
+    useState<PreparedRouteSnapshot | null>(null);
   const launchingRef = useRef(false);
   const [readinessReturn, setReadinessReturn] = useState<"home" | "tune">(
     "home",
@@ -3153,9 +3170,11 @@ export default function App() {
     source: Preferences,
     returnTo: "home" | "tune",
     space = activeRelaySpace(source),
+    prepared = prepareRouteSnapshot(source, space, routePreviewSeed),
   ) {
     setDraft(source);
     setDraftSpace(space);
+    setPreparedForLaunch(prepared);
     setReadinessReturn(returnTo);
     setScreen("readiness");
   }
@@ -3164,7 +3183,7 @@ export default function App() {
     source: Preferences,
     sourceSpace: RelaySpace,
     seed: number,
-  ) {
+  ): PreparedRouteSnapshot {
     const compatibleStations = stationsForSpaceMode(
       sourceSpace.stations,
       sourceSpace.spaceMode,
@@ -3202,18 +3221,20 @@ export default function App() {
     };
   }
 
-  function prepareHandoff() {
+  function prepareHandoff(prepared?: PreparedRouteSnapshot) {
     if (session?.status === "active") return;
     const now = Date.now();
     const sourceSpace = activeRelaySpace(preferences);
-    const prepared = prepareRouteSnapshot(preferences, sourceSpace, now);
+    const snapshot =
+      prepared ??
+      prepareRouteSnapshot(preferences, sourceSpace, routePreviewSeed);
     const next = createBreakHandoff({
       space: sourceSpace,
       feeling: preferences.feeling,
       durationMinutes: preferences.duration,
-      route: prepared.route,
-      eligibleStations: prepared.eligibleStations,
-      unavailableStationIds: prepared.unavailableStationIds,
+      route: snapshot.route,
+      eligibleStations: snapshot.eligibleStations,
+      unavailableStationIds: snapshot.unavailableStationIds,
       now,
     });
     try {
@@ -3239,10 +3260,13 @@ export default function App() {
       keepAwake: boolean;
       alwaysReviewLaunch: boolean;
     },
+    prepared?: PreparedRouteSnapshot,
   ) {
     if (launchingRef.current || session?.status === "active") return;
     const now = Date.now();
-    const prepared = prepareRouteSnapshot(source, sourceSpace, now);
+    const snapshot =
+      prepared ??
+      prepareRouteSnapshot(source, sourceSpace, routePreviewSeed);
     launchingRef.current = true;
     const nextPreferences = {
       ...source,
@@ -3261,7 +3285,7 @@ export default function App() {
     };
     updatePreferences(nextPreferences);
     setDraft(nextPreferences);
-    const route = prepared.route;
+    const route = snapshot.route;
     let nextSession = createSession({
       route,
       durationMinutes: nextPreferences.duration,
@@ -3273,8 +3297,8 @@ export default function App() {
         spaceMode: sourceSpace.spaceMode,
         steps: routeMemoryContextSteps(route),
       },
-      eligibleStations: prepared.eligibleStations,
-      unavailableStationIds: prepared.unavailableStationIds,
+      eligibleStations: snapshot.eligibleStations,
+      unavailableStationIds: snapshot.unavailableStationIds,
       now,
       spaceSnapshot: sourceSpace,
     });
@@ -3485,7 +3509,14 @@ export default function App() {
     return (
       <Readiness
         onBack={() => setScreen(readinessReturn)}
-        onStart={(options) => startRelay(draft, draftSpace, options)}
+        onStart={(options) =>
+          startRelay(
+            draft,
+            draftSpace,
+            options,
+            preparedForLaunch ?? undefined,
+          )
+        }
         preferences={draft}
       />
     );
@@ -3577,25 +3608,50 @@ export default function App() {
     );
   }
 
+  const homeSpace = activeRelaySpace(preferences);
+  const preparedHomeRoute = prepareRouteSnapshot(
+    preferences,
+    homeSpace,
+    routePreviewSeed,
+  );
+
   return (
     <>
       <Home
         onAvailabilityChange={setUnavailableNow}
         onChange={updatePreferences}
-        onReview={() => openReadiness(preferences, "home")}
-        onHandoff={prepareHandoff}
+        onReview={() =>
+          openReadiness(
+            preferences,
+            "home",
+            homeSpace,
+            preparedHomeRoute,
+          )
+        }
+        onHandoff={() => prepareHandoff(preparedHomeRoute)}
         onSettings={() => setSettingsOpen(true)}
         onStart={() => {
           if (needsLaunchReview(preferences)) {
-            openReadiness(preferences, "home");
+            openReadiness(
+              preferences,
+              "home",
+              homeSpace,
+              preparedHomeRoute,
+            );
             return;
           }
-          startRelay(preferences, activeRelaySpace(preferences), {
-            audioEnabled: preferences.audioEnabled,
-            keepAwake: preferences.keepAwake,
-            alwaysReviewLaunch: preferences.alwaysReviewLaunch,
-          });
+          startRelay(
+            preferences,
+            homeSpace,
+            {
+              audioEnabled: preferences.audioEnabled,
+              keepAwake: preferences.keepAwake,
+              alwaysReviewLaunch: preferences.alwaysReviewLaunch,
+            },
+            preparedHomeRoute,
+          );
         }}
+        preparedRoute={preparedHomeRoute.route}
         preferences={preferences}
         unavailableNow={unavailableNow}
         onSpaceSwitch={(spaceId) => {

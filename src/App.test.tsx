@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { buildRoute, STATION_PRESETS } from "./data";
+import { buildRoute, DEFAULT_PREFERENCES, STATION_PRESETS } from "./data";
 import { completeSession, createSession, skipStep } from "./session";
 import { ROUTE_MEMORY_STORAGE_KEY } from "./routeMemory";
 import {
@@ -744,6 +744,97 @@ describe("Break Relay", () => {
       keepAwake: true,
       lastAnnouncedStepId: expect.any(String),
     });
+  });
+
+  it("previews the exact purposeful route that the primary action starts", async () => {
+    const user = userEvent.setup();
+    const stations = ["window", "water", "hallway"].map(
+      (id) => STATION_PRESETS.find((station) => station.id === id)!,
+    );
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_PREFERENCES,
+        spaces: [
+          {
+            id: "preview-space",
+            name: "Home",
+            stations,
+            spaceMode: "any",
+          },
+        ],
+        activeSpaceId: "preview-space",
+        feeling: "noise",
+        duration: 7,
+        audioEnabled: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: { speech: true, wakeLock: false },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+
+    const preview = screen.getByRole("list", {
+      name: "Prepared relay route",
+    });
+    const previewItems = within(preview).getAllByRole("listitem");
+    const previewSteps = previewItems
+      .map((item) => ({
+        id: item.dataset.routeStepId,
+        phase: item.dataset.phase,
+        durationSeconds: Number(item.dataset.durationSeconds),
+      }));
+
+    expect(previewSteps.map((step) => step.phase)).toEqual([
+      "move",
+      "arrive",
+      "move",
+      "arrive",
+      "quiet",
+      "return",
+    ]);
+    expect(
+      previewSteps.reduce(
+        (seconds, step) => seconds + step.durationSeconds,
+        0,
+      ),
+    ).toBe(7 * 60);
+    expect(within(preview).getAllByText("NEXT PLACE")).toHaveLength(2);
+    expect(within(preview).getAllByText("LAND HERE")).toHaveLength(2);
+    expect(
+      previewItems.every(
+        (item) =>
+          Boolean(item.querySelector("strong")?.textContent) &&
+          /\d+ (?:sec|min)/.test(item.querySelector("em")?.textContent ?? ""),
+      ),
+    ).toBe(true);
+    expect(preview).toHaveTextContent(/Go to (Water stop|Hallway)/);
+    expect(preview).toHaveTextContent(/At (Water stop|Hallway)/);
+    expect(within(preview).getByText("Quiet at Window or view")).toBeVisible();
+    expect(within(preview).getByText("RETURN WINDOW")).toBeVisible();
+    expect(within(preview).getByText("Return window")).toBeVisible();
+    expect(within(preview).queryByText(/Comfortable pause/i)).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+
+    const active = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(
+      active.route.map(
+        (step: {
+          id: string;
+          phase: string;
+          durationSeconds: number;
+        }) => ({
+          id: step.id,
+          phase: step.phase,
+          durationSeconds: step.durationSeconds,
+        }),
+      ),
+    ).toEqual(previewSteps);
   });
 
   it("lets a remembered visual-mode user review, test, and restore spoken cues", async () => {
