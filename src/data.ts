@@ -333,6 +333,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   activeSpaceId: "space-default",
   feeling: "noise",
   duration: 7,
+  cueSoundEnabled: true,
   audioEnabled: true,
   keepAwake: false,
   alwaysReviewLaunch: false,

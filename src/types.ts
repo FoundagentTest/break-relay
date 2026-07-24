@@ -32,6 +32,7 @@ export interface Preferences {
   activeSpaceId: string;
   feeling: Feeling;
   duration: 5 | 7 | 10;
+  cueSoundEnabled: boolean;
   audioEnabled: boolean;
   keepAwake: boolean;
   alwaysReviewLaunch: boolean;
@@ -44,6 +45,12 @@ export interface Preferences {
 export interface LaunchCapabilitySnapshot {
   speech: boolean;
   wakeLock: boolean;
+  checkedAt?: number;
+  signature?: string;
+  chimeVerified?: boolean;
+  visualOnlyAcknowledged?: boolean;
+  speechVerified?: boolean;
+  wakeVerified?: boolean;
 }
 
 export interface RouteStep {
@@ -108,18 +115,22 @@ export interface ActiveSession {
   startedAt: number;
   stepDeadlineAt: number;
   deadlineAt: number;
+  originalDeadlineAt: number;
   currentStepIndex: number;
   paused: boolean;
   pausedAt: number | null;
   status: "active" | "complete";
   endedEarly: boolean;
   extensionUsed: boolean;
+  cueSoundEnabled: boolean;
   audioEnabled: boolean;
   keepAwake: boolean;
   cueDeliveryFailed: boolean;
+  speechDeliveryFailed: boolean;
   wakeLockFailed: boolean;
   durationMinutes: number;
   completedAt: number | null;
   lastAnnouncedStepId: string | null;
+  announcedCueIds: string[];
   updatedAt: number;
 }

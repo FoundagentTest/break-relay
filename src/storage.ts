@@ -179,6 +179,28 @@ export function loadPreferences(): Preferences {
         ? {
             speech: savedSnapshotRecord.speech,
             wakeLock: savedSnapshotRecord.wakeLock,
+            ...(typeof savedSnapshotRecord.checkedAt === "number"
+              ? { checkedAt: savedSnapshotRecord.checkedAt }
+              : {}),
+            ...(typeof savedSnapshotRecord.signature === "string"
+              ? { signature: savedSnapshotRecord.signature }
+              : {}),
+            ...(typeof savedSnapshotRecord.chimeVerified === "boolean"
+              ? { chimeVerified: savedSnapshotRecord.chimeVerified }
+              : {}),
+            ...(typeof savedSnapshotRecord.visualOnlyAcknowledged ===
+            "boolean"
+              ? {
+                  visualOnlyAcknowledged:
+                    savedSnapshotRecord.visualOnlyAcknowledged,
+                }
+              : {}),
+            ...(typeof savedSnapshotRecord.speechVerified === "boolean"
+              ? { speechVerified: savedSnapshotRecord.speechVerified }
+              : {}),
+            ...(typeof savedSnapshotRecord.wakeVerified === "boolean"
+              ? { wakeVerified: savedSnapshotRecord.wakeVerified }
+              : {}),
           }
         : legacyLaunchPreferences && parsed.hasOnboarded
           ? {
@@ -210,6 +232,10 @@ export function loadPreferences(): Preferences {
         parsed.duration === 10
           ? parsed.duration
           : DEFAULT_PREFERENCES.duration,
+      cueSoundEnabled:
+        typeof parsed.cueSoundEnabled === "boolean"
+          ? parsed.cueSoundEnabled
+          : true,
       audioEnabled:
         typeof parsed.audioEnabled === "boolean"
           ? parsed.audioEnabled
@@ -389,6 +415,8 @@ function normalizeSession(
     typeof session.startedAt === "number" &&
     typeof session.stepDeadlineAt === "number" &&
     typeof session.deadlineAt === "number" &&
+    (typeof session.originalDeadlineAt === "number" ||
+      typeof session.originalDeadlineAt === "undefined") &&
     typeof session.currentStepIndex === "number" &&
     session.currentStepIndex >= 0 &&
     session.currentStepIndex < normalizedRoute.length &&
@@ -397,6 +425,8 @@ function normalizeSession(
     (session.status === "active" || session.status === "complete") &&
     typeof session.endedEarly === "boolean" &&
     typeof session.extensionUsed === "boolean" &&
+    (typeof session.cueSoundEnabled === "boolean" ||
+      typeof session.cueSoundEnabled === "undefined") &&
     typeof session.audioEnabled === "boolean" &&
     typeof session.keepAwake === "boolean" &&
     typeof session.durationMinutes === "number" &&
@@ -467,8 +497,12 @@ function normalizeSession(
       | "eligibleStations"
       | "unavailableStationIds"
       | "rerouteCount"
+      | "originalDeadlineAt"
+      | "cueSoundEnabled"
       | "cueDeliveryFailed"
+      | "speechDeliveryFailed"
       | "wakeLockFailed"
+      | "announcedCueIds"
     >),
     version: 7,
     source: session.source === "handoff" ? "handoff" : "local",
@@ -486,14 +520,35 @@ function normalizeSession(
       session.rerouteCount >= 0
         ? session.rerouteCount
         : 0,
+    originalDeadlineAt:
+      typeof session.originalDeadlineAt === "number"
+        ? session.originalDeadlineAt
+        : session.deadlineAt as number,
+    cueSoundEnabled:
+      typeof session.cueSoundEnabled === "boolean"
+        ? session.cueSoundEnabled
+        : true,
     cueDeliveryFailed:
       typeof session.cueDeliveryFailed === "boolean"
         ? session.cueDeliveryFailed
+        : false,
+    speechDeliveryFailed:
+      typeof session.speechDeliveryFailed === "boolean"
+        ? session.speechDeliveryFailed
         : false,
     wakeLockFailed:
       typeof session.wakeLockFailed === "boolean"
         ? session.wakeLockFailed
         : false,
+    announcedCueIds: Array.isArray(session.announcedCueIds)
+      ? session.announcedCueIds.filter(
+          (id): id is string =>
+            typeof id === "string" &&
+            (routeIds.has(id) || id === "__complete__"),
+        )
+      : typeof session.lastAnnouncedStepId === "string"
+        ? [session.lastAnnouncedStepId]
+        : [],
   };
 }
 

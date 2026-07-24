@@ -18,10 +18,16 @@ import {
   STATION_PRESETS,
   stationsForSpaceMode,
 } from "./data";
-import { getRelayCapabilities, speakCue } from "./capabilities";
+import {
+  getRelayCapabilities,
+  playCueSignal,
+  speakCue,
+  type SpeechCueCallbacks,
+} from "./capabilities";
 import {
   completeSession,
   createSession,
+  markFinalCueIssued,
   markCueAnnounced,
   pauseSession,
   reconcileSession,
@@ -30,6 +36,7 @@ import {
   replaceWithExtension,
   resumeSession,
   shouldAnnounceCue,
+  shouldIssueFinalCue,
   skipStep,
 } from "./session";
 import {
@@ -81,6 +88,17 @@ import type {
   SpaceMode,
   Station,
 } from "./types";
+import {
+  capabilitySignature,
+  formatLocalReturnTime,
+  freshCapabilityCheck,
+  returnTimeBackupText,
+} from "./readiness";
+import {
+  releaseScreenWake,
+  requestScreenWake,
+  type WakeLockSentinelLike,
+} from "./wakeLock";
 
 type Screen =
   | "stations"
@@ -634,28 +652,107 @@ function canUseSpeech() {
   return getRelayCapabilities().speech;
 }
 
-function speak(text: string, onError?: () => void) {
-  return speakCue(text, onError);
+function speak(text: string, callbacks: SpeechCueCallbacks | (() => void) = {}) {
+  return speakCue(text, callbacks);
 }
 
-function launchCapabilitySnapshot(): LaunchCapabilitySnapshot {
+function launchCapabilitySnapshot({
+  chimeVerified,
+  visualOnlyAcknowledged,
+  speechVerified,
+  wakeVerified,
+  checkedAt = Date.now(),
+}: {
+  chimeVerified: boolean;
+  visualOnlyAcknowledged: boolean;
+  speechVerified: boolean;
+  wakeVerified: boolean;
+  checkedAt?: number;
+}): LaunchCapabilitySnapshot {
   const capabilities = getRelayCapabilities();
   return {
     speech: capabilities.speech,
     wakeLock: capabilities.wakeLock,
+    checkedAt,
+    signature: capabilitySignature(),
+    chimeVerified,
+    visualOnlyAcknowledged,
+    speechVerified,
+    wakeVerified,
   };
 }
 
 function needsLaunchReview(preferences: Preferences) {
-  const current = launchCapabilitySnapshot();
-  const previous = preferences.capabilitySnapshot;
   return (
     !preferences.launchSetupComplete ||
     preferences.alwaysReviewLaunch ||
     preferences.launchNeedsReview ||
-    !previous ||
-    (preferences.audioEnabled && previous.speech !== current.speech) ||
-    (preferences.keepAwake && previous.wakeLock !== current.wakeLock)
+    !freshCapabilityCheck(preferences.capabilitySnapshot, {
+      cueSoundEnabled: preferences.cueSoundEnabled,
+      keepAwake: preferences.keepAwake,
+    })
+  );
+}
+
+type LaunchFailure = "chime" | "wake";
+
+interface LaunchAttempt {
+  started: boolean;
+  failure?: LaunchFailure;
+}
+
+function ReturnTimeBackup({
+  deadlineAt,
+  durationMinutes,
+  compact = false,
+}: {
+  deadlineAt: number;
+  durationMinutes: number;
+  compact?: boolean;
+}) {
+  const [copyStatus, setCopyStatus] = useState("");
+  const text = returnTimeBackupText(deadlineAt, durationMinutes);
+
+  async function copyReturnTime() {
+    setCopyStatus("");
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus("Exact return time copied.");
+    } catch {
+      const temporary = document.createElement("textarea");
+      temporary.value = text;
+      temporary.setAttribute("readonly", "");
+      temporary.style.position = "fixed";
+      temporary.style.opacity = "0";
+      document.body.appendChild(temporary);
+      temporary.select();
+      const copied = document.execCommand?.("copy");
+      temporary.remove();
+      setCopyStatus(
+        copied
+          ? "Exact return time copied."
+          : "Copy was blocked. Set your device timer from the time shown.",
+      );
+    }
+  }
+
+  return (
+    <div className={`return-backup ${compact ? "return-backup--compact" : ""}`}>
+      <p>
+        <strong>Local return time</strong>
+        <time dateTime={new Date(deadlineAt).toISOString()}>
+          {formatLocalReturnTime(deadlineAt)}
+        </time>
+      </p>
+      <p>
+        For a locked-screen alert, set a {durationMinutes}-minute device timer
+        now. Relay has not created an alarm or notification.
+      </p>
+      <button className="secondary-button" onClick={copyReturnTime} type="button">
+        Copy exact return time
+      </button>
+      <span aria-live="polite">{copyStatus}</span>
+    </div>
   );
 }
 
@@ -673,11 +770,11 @@ function AudioChoice({
         <Icon name="sound" />
       </div>
       <div className="audio-choice__copy">
-        <strong>Spoken cues</strong>
+        <strong>Optional spoken detail</strong>
         <p>
           {speechAvailable
-            ? "Your browser will calmly distinguish moving, staying, and returning. No headphones required."
-            : "Speech is unavailable in this browser. Large visual cues stay on screen, and vibration is used where supported."}
+            ? "This browser exposes speech, but Relay will only call it ready after playback starts. The offline chime and visible cue remain the baseline."
+            : "Speech is unavailable here. The offline chime and large visible cues do not depend on it."}
         </p>
         {enabled && speechAvailable && (
           <button
@@ -687,7 +784,7 @@ function AudioChoice({
             }
             type="button"
           >
-            Test this voice
+            Test voice enhancement
           </button>
         )}
       </div>
@@ -775,8 +872,9 @@ function TuneSetup({
               ))}
             </div>
             <div className="launch-note">
-              Start with your device’s volume at a comfortable level. The first
-              cue plays immediately.
+              Start with your device’s volume at a comfortable level. Relay
+              checks its bundled chime from your launch action before the clock
+              starts.
             </div>
             <button
               className="primary-button primary-button--coral primary-button--wide"
@@ -796,41 +894,92 @@ function TuneSetup({
 
 function Readiness({
   preferences,
+  initialFailure,
   onBack,
   onStart,
 }: {
   preferences: Preferences;
+  initialFailure: LaunchFailure | null;
   onBack: () => void;
   onStart: (options: {
+    cueSoundEnabled: boolean;
     audioEnabled: boolean;
     keepAwake: boolean;
     alwaysReviewLaunch: boolean;
-  }) => void;
+  }) => Promise<LaunchAttempt>;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
+  const [cueSoundEnabled, setCueSoundEnabled] = useState(
+    preferences.cueSoundEnabled && capabilities.audio,
+  );
+  const [chimeStatus, setChimeStatus] = useState<
+    "idle" | "checking" | "verified" | "failed"
+  >(
+    freshCapabilityCheck(preferences.capabilitySnapshot, {
+      cueSoundEnabled: true,
+      keepAwake: false,
+    })
+      ? "verified"
+      : "idle",
+  );
   const [spokenCues, setSpokenCues] = useState(
     preferences.audioEnabled && capabilities.speech,
   );
-  const [audioTested, setAudioTested] = useState(false);
-  const [audioTestFailed, setAudioTestFailed] = useState(false);
+  const [speechStatus, setSpeechStatus] = useState<
+    "untested" | "checking" | "verified" | "failed"
+  >(
+    capabilities.speech &&
+      preferences.capabilitySnapshot?.speechVerified
+      ? "verified"
+      : "untested",
+  );
   const [keepAwake, setKeepAwake] = useState(
     preferences.keepAwake && capabilities.wakeLock,
   );
   const [alwaysReviewLaunch, setAlwaysReviewLaunch] = useState(
     preferences.alwaysReviewLaunch,
   );
+  const [launchFailure, setLaunchFailure] =
+    useState<LaunchFailure | null>(initialFailure);
+  const [launching, setLaunching] = useState(false);
+  const [projectedDeadline, setProjectedDeadline] = useState(
+    () => Date.now() + preferences.duration * 60_000,
+  );
   const audioEnabled = spokenCues && capabilities.speech;
 
-  function checkAudio() {
-    setAudioTested(true);
-    setAudioTestFailed(false);
+  async function checkChime() {
+    setChimeStatus("checking");
+    const result = await playCueSignal("phase");
+    setChimeStatus(result.ok ? "verified" : "failed");
+    if (!result.ok) setLaunchFailure("chime");
+  }
+
+  function checkSpeech() {
+    setSpeechStatus("checking");
     speak(
       "Break Relay is ready. The next cue will name one place and one action.",
-      () => {
-        setSpokenCues(false);
-        setAudioTestFailed(true);
+      {
+        onStart: () => setSpeechStatus("verified"),
+        onError: () => {
+          setSpokenCues(false);
+          setSpeechStatus("failed");
+        },
       },
     );
+  }
+
+  async function launch() {
+    setProjectedDeadline(Date.now() + preferences.duration * 60_000);
+    setLaunchFailure(null);
+    setLaunching(true);
+    const result = await onStart({
+      cueSoundEnabled,
+      audioEnabled,
+      keepAwake,
+      alwaysReviewLaunch,
+    });
+    setLaunching(false);
+    if (!result.started) setLaunchFailure(result.failure ?? "chime");
   }
 
   return (
@@ -853,8 +1002,9 @@ function Readiness({
           <h1>Set a boundary this browser can keep.</h1>
           <p className="lede">
             Your exact route and deadline stay on this device. If the tab sleeps
-            or reloads, Relay catches up to the one cue that matters now. Tests
-            here are optional—the first real route cue can be your confirmation.
+            or reloads, Relay catches up to the one cue that matters now. The
+            launch action checks real chime playback and any chosen screen wake
+            before the session exists.
           </p>
         </div>
 
@@ -866,54 +1016,133 @@ function Readiness({
               </span>
               <div>
                 <p className="capability-label">
-                  {capabilities.speech ? "SPOKEN CUES AVAILABLE" : "VISUAL CUES ONLY"}
+                  {chimeStatus === "verified"
+                    ? "OFFLINE CHIME VERIFIED"
+                    : chimeStatus === "failed" || !capabilities.audio
+                      ? "CHIME NOT AVAILABLE"
+                      : "CHIME READY TO CHECK"}
                 </p>
-                <h2>
-                  {capabilities.speech
-                    ? "Choose spoken or visual cues."
-                    : "This browser cannot speak the route."}
-                </h2>
+                <h2>A calm sound cue, with a distinct return.</h2>
                 <p>
-                  {capabilities.speech
-                    ? "A cue can play while this page remains active. Background and locked-screen delivery still depends on your browser and operating system."
-                    : "Keep the dim cue page visible when possible. Relay will still recover the correct step and deadline when you return."}
+                  The short bundled chime works offline. Ordinary phases use one
+                  soft note; the final return uses two. Relay confirms playback
+                  from your launch gesture, not from API presence.
                 </p>
-                {audioEnabled && (
+                {cueSoundEnabled && capabilities.audio && (
                   <button
                     className={`secondary-button audio-check ${
-                      audioTested && !audioTestFailed ? "is-checked" : ""
+                      chimeStatus === "verified" ? "is-checked" : ""
                     }`}
-                    onClick={checkAudio}
+                    disabled={chimeStatus === "checking"}
+                    onClick={checkChime}
                     type="button"
                   >
                     <Icon
-                      name={audioTested && !audioTestFailed ? "check" : "play"}
+                      name={chimeStatus === "verified" ? "check" : "play"}
                       size={17}
                     />
-                    {audioTested && !audioTestFailed
-                      ? "Optional voice test played"
-                      : "Test voice (optional)"}
+                    {chimeStatus === "checking"
+                      ? "Checking chime…"
+                      : chimeStatus === "verified"
+                        ? "Chime playback verified"
+                        : "Play chime check"}
                   </button>
                 )}
-                {capabilities.speech && (
-                  <button
-                    className="inline-button visual-only-button"
-                    onClick={() => {
-                      window.speechSynthesis.cancel();
-                      setSpokenCues((current) => !current);
-                      setAudioTestFailed(false);
+                <label className="wake-choice">
+                  <input
+                    checked={cueSoundEnabled}
+                    disabled={!capabilities.audio}
+                    onChange={(event) => {
+                      setCueSoundEnabled(event.target.checked);
+                      setLaunchFailure(null);
                     }}
-                    type="button"
-                  >
-                    {audioEnabled
-                      ? "Use visual cues instead"
-                      : "Use spoken cues"}
-                  </button>
-                )}
-                {audioTestFailed && (
+                    type="checkbox"
+                  />
+                  <span aria-hidden="true" />
+                  <span>Use offline sound cues</span>
+                </label>
+                {(chimeStatus === "failed" || !capabilities.audio) && (
                   <p className="capability-warning" role="status">
-                    The voice test failed, so this relay will use the visible cue
-                    and vibration where supported.
+                    The chime could not start here. Do not rely on sound away
+                    from this screen. Use the exact return time and device-timer
+                    backup shown beside Start.
+                  </p>
+                )}
+                {!cueSoundEnabled && (
+                  <p className="capability-warning">
+                    Sound is off. This is a visual-only relay; vibration may
+                    accompany visible changes where the device allows it.
+                  </p>
+                )}
+              </div>
+            </article>
+
+            <article className="capability-card capability-card--subtle">
+              <span className="capability-icon">
+                <Icon name="sound" />
+              </span>
+              <div>
+                <p className="capability-label">
+                  {speechStatus === "verified"
+                    ? "VOICE PLAYBACK VERIFIED"
+                    : capabilities.speech
+                      ? "VOICE API DETECTED"
+                      : "VISUAL CUES ONLY"}
+                </p>
+                <h2>Speech is an optional enhancement.</h2>
+                <p>
+                  {capabilities.speech
+                    ? "A speech API can exist while its device dispatcher is missing. Relay only calls voice verified after speech actually starts; chime and visuals remain independent. Background or locked-screen playback may be silenced."
+                    : "This device will use the chime and visible instructions without speech."}
+                </p>
+                {capabilities.speech && (
+                  <>
+                    <label className="wake-choice">
+                      <input
+                        checked={spokenCues}
+                        onChange={(event) => {
+                          setSpokenCues(event.target.checked);
+                          setSpeechStatus("untested");
+                        }}
+                        type="checkbox"
+                      />
+                      <span aria-hidden="true" />
+                      <span>Add spoken route detail</span>
+                    </label>
+                    {spokenCues && (
+                      <button
+                        aria-label="Test voice (optional)"
+                        className="inline-button visual-only-button"
+                        disabled={speechStatus === "checking"}
+                        onClick={checkSpeech}
+                        type="button"
+                      >
+                        {speechStatus === "checking"
+                          ? "Listening for voice…"
+                          : speechStatus === "verified"
+                            ? "Voice playback verified"
+                            : "Test voice enhancement"}
+                      </button>
+                    )}
+                    <button
+                      className="inline-button visual-only-button"
+                      onClick={() => {
+                        window.speechSynthesis.cancel();
+                        setSpokenCues((current) => !current);
+                        setSpeechStatus("untested");
+                      }}
+                      type="button"
+                    >
+                      {spokenCues
+                        ? "Use chime without voice"
+                        : "Use spoken cues"}
+                    </button>
+                  </>
+                )}
+                {speechStatus === "failed" && (
+                  <p className="capability-warning" role="status">
+                    Voice did not start. It has been turned off; the chime and
+                    visible cue are unchanged.
                   </p>
                 )}
               </div>
@@ -925,17 +1154,19 @@ function Readiness({
               </span>
               <div>
                 <p className="capability-label">
-                  {capabilities.wakeLock ? "SCREEN WAKE AVAILABLE" : "SYSTEM FALLBACK"}
+                  {capabilities.wakeLock
+                    ? "SCREEN WAKE CAN BE REQUESTED"
+                    : "SYSTEM FALLBACK"}
                 </p>
                 <h2>
                   {capabilities.wakeLock
-                    ? "Keep the dim relay surface awake."
+                    ? "Verify a dim, awake relay surface at launch."
                     : "Your screen may sleep normally."}
                 </h2>
                 <p>
                   {capabilities.wakeLock
-                    ? "Optional. This asks the device to keep the display awake only while Relay is visible and running. It releases on pause or finish."
-                    : "Relay cannot prevent sleep here. If you need a cue through a locked screen, use your device’s timer as a backup."}
+                    ? "Optional. The launch action must receive and observe a screen wake lock before Relay tells you to step away. It releases on pause or finish."
+                    : "Relay cannot prevent sleep here. It will recover the clock when reopened, but that is not a locked-screen alert."}
                 </p>
                 <label className="wake-choice">
                   <input
@@ -977,27 +1208,46 @@ function Readiness({
             <strong>{preferences.duration}</strong>
             <span>minutes, measured by the clock</span>
             <p>
-              No notifications are required. Locking the device or moving the
-              browser fully into the background can silence web audio; your
-              route itself will not restart or gain time.
+              Relay has not established notification, background, locked-screen,
+              or alarm delivery. Locking the device can silence every web cue.
+              The local wall clock and saved route are the durable parts.
             </p>
+            {launchFailure && (
+              <div className="launch-failure" role="alert">
+                <strong>
+                  {launchFailure === "chime"
+                    ? "The chime did not start."
+                    : "Screen wake was not granted."}
+                </strong>
+                <p>
+                  {launchFailure === "chime"
+                    ? "Do not leave expecting a sound cue. Turn sound off for a visual-only relay, retry, or use your device timer."
+                    : "The display may sleep. Turn screen wake off to continue with the chime, visible cue, and timer backup."}
+                </p>
+              </div>
+            )}
+            <ReturnTimeBackup
+              compact
+              deadlineAt={projectedDeadline}
+              durationMinutes={preferences.duration}
+            />
             <button
               className="primary-button primary-button--coral primary-button--wide"
-              onClick={() =>
-                onStart({
-                  audioEnabled,
-                  keepAwake,
-                  alwaysReviewLaunch,
-                })
-              }
+              disabled={launching}
+              onClick={launch}
               type="button"
             >
-              Start and step away
+              {launching
+                ? "Verifying this device…"
+                : cueSoundEnabled
+                  ? "Verify, start, then step away"
+                  : "Start visual-only relay"}
               <Icon name="arrow" />
             </button>
             <small>
-              No sample is required. Your first move cue plays from this
-              action.
+              No sample is required—the first route chime is the sound check.
+              The clock starts only after selected cue and wake checks
+              succeed.
             </small>
           </aside>
         </div>
@@ -1042,9 +1292,8 @@ function Recovery({
             <div>
               <dt>Boundary</dt>
               <dd>
-                {session.paused
-                  ? `${minutes} min held while paused`
-                  : `About ${minutes} min remain`}
+                {formatLocalReturnTime(session.deadlineAt)} · about {minutes}{" "}
+                min remain
               </dd>
             </div>
             <div>
@@ -1069,8 +1318,8 @@ function Recovery({
           </div>
         </div>
         <p className="recovery-note">
-          Discarding removes only this active relay. Your saved stations stay in
-          this browser.
+          Pausing holds route cues, not the clock. Discarding removes only this
+          active relay; your saved stations stay in this browser.
         </p>
       </section>
     </main>
@@ -1115,8 +1364,24 @@ function Home({
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
   const capabilities = getRelayCapabilities();
-  const spokenMode = preferences.audioEnabled && capabilities.speech;
-  const awakeMode = preferences.keepAwake && capabilities.wakeLock;
+  const checkIsFresh = freshCapabilityCheck(
+    preferences.capabilitySnapshot,
+    {
+      cueSoundEnabled: preferences.cueSoundEnabled,
+      keepAwake: preferences.keepAwake,
+    },
+  );
+  const chimeReady =
+    preferences.cueSoundEnabled &&
+    checkIsFresh &&
+    preferences.capabilitySnapshot?.chimeVerified;
+  const spokenMode =
+    preferences.audioEnabled &&
+    preferences.capabilitySnapshot?.speechVerified;
+  const awakeMode =
+    preferences.keepAwake &&
+    checkIsFresh &&
+    preferences.capabilitySnapshot?.wakeVerified;
   const activeSpace = activeRelaySpace(preferences);
   const compatibleStations = stationsForSpaceMode(
     activeSpace.stations,
@@ -1146,7 +1411,7 @@ function Home({
           <p className="eyebrow">A ROUTE AWAY, THEN BACK</p>
           <h1>What would feel different for a few minutes?</h1>
           <p className="lede">
-            Choose the need. Relay handles the route and the return.
+            Choose the need. Relay composes a route around a local return time.
           </p>
         </div>
 
@@ -1196,8 +1461,8 @@ function Home({
               {activeStations.length > 0
                 ? `This exact relay is drawn from ${activeStations.length} ${
                     activeStations.length === 1 ? "place" : "places"
-                  } available now, with its return time protected.`
-                : "No travel is required. This relay will use one turn-away pause and a clear return window."}
+                  } available now. Its absolute local deadline will not drift.`
+                : "No travel is required. This relay will use one turn-away pause and a clear clock boundary."}
             </p>
             <button
               aria-controls="availability-now"
@@ -1313,15 +1578,23 @@ function Home({
             <div className="launch-summary" aria-label="Current screen-away mode">
               <div>
                 <span>
-                  <Icon name={spokenMode ? "sound" : "spark"} size={17} />
-                  {preferences.launchNeedsReview && preferences.audioEnabled
-                    ? "Spoken cues need review"
-                    : spokenMode
-                    ? "Spoken + visible cues"
-                    : preferences.audioEnabled
-                      ? "Voice unavailable · visible cues"
-                      : "Visible cues + vibration"}
+                  <Icon name={chimeReady ? "sound" : "spark"} size={17} />
+                  {preferences.cueSoundEnabled
+                    ? chimeReady
+                      ? "Verified offline chime + visible cues"
+                      : "Chime needs a launch check"
+                    : "Visual-only · device timer advised"}
                 </span>
+                {preferences.audioEnabled && (
+                  <span>
+                    <Icon name="sound" size={17} />
+                    {spokenMode
+                      ? "Voice enhancement verified"
+                      : capabilities.speech
+                        ? "Voice enhancement unverified"
+                        : "Voice enhancement unavailable"}
+                  </span>
+                )}
                 <span>
                   <Icon name="spark" size={17} />
                   {preferences.launchNeedsReview && preferences.keepAwake
@@ -1338,8 +1611,13 @@ function Home({
               </button>
             </div>
             <p className="launch-boundary">
-              Keep Relay visible when possible. Background or locked-screen cues
-              are never guaranteed.
+              Starting now returns at{" "}
+              <strong>
+                {formatLocalReturnTime(
+                  Date.now() + preferences.duration * 60_000,
+                )}
+              </strong>
+              . This is a local clock time, not a notification or alarm.
             </p>
             {preferences.alwaysReviewLaunch && (
               <p className="always-review-note">
@@ -1606,16 +1884,32 @@ function HandoffSource({
 
 function HandoffReceive({
   handoff,
+  receiverPreferences,
   onCancel,
   onStart,
 }: {
   handoff: BreakHandoff;
+  receiverPreferences: Preferences;
   onCancel: () => void;
-  onStart: (options: { audioEnabled: boolean; keepAwake: boolean }) => void;
+  onStart: (options: {
+    cueSoundEnabled: boolean;
+    audioEnabled: boolean;
+    keepAwake: boolean;
+  }) => Promise<LaunchAttempt>;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
-  const [spokenCues, setSpokenCues] = useState(capabilities.speech);
-  const [keepAwake, setKeepAwake] = useState(false);
+  const [cueSoundEnabled, setCueSoundEnabled] = useState(
+    receiverPreferences.cueSoundEnabled && capabilities.audio,
+  );
+  const [spokenCues, setSpokenCues] = useState(
+    receiverPreferences.audioEnabled && capabilities.speech,
+  );
+  const [keepAwake, setKeepAwake] = useState(
+    receiverPreferences.keepAwake && capabilities.wakeLock,
+  );
+  const [launchFailure, setLaunchFailure] =
+    useState<LaunchFailure | null>(null);
+  const [launching, setLaunching] = useState(false);
   const [now, setNow] = useState(Date.now());
   const expired = now >= handoff.expiresAt;
   const feeling = FEELINGS.find((item) => item.id === handoff.feeling);
@@ -1694,25 +1988,51 @@ function HandoffReceive({
 
           <section className="receive-capabilities">
             <p className="eyebrow">THIS DEVICE’S CUES</p>
-            <h2>Use what is actually available here.</h2>
+            <h2>Verify this receiver before leaving it.</h2>
+            <div className="receiver-option">
+              <div>
+                <strong>
+                  {cueSoundEnabled
+                    ? "Offline chime + visible cues"
+                    : "Visual-only cues"}
+                </strong>
+                <p>
+                  {capabilities.audio
+                    ? "The receiving device will confirm actual bundled-chime playback from Start. The return uses a distinct two-note signal."
+                    : "Audio playback is unavailable here. Keep the large cue visible and use the exact-time timer backup below."}
+                </p>
+              </div>
+              <label className="switch">
+                <span className="sr-only">Sound cues on this device</span>
+                <input
+                  checked={cueSoundEnabled}
+                  disabled={!capabilities.audio}
+                  onChange={(event) =>
+                    setCueSoundEnabled(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span aria-hidden="true" />
+              </label>
+            </div>
             <div className="receiver-option">
               <div>
                 <strong>
                   {capabilities.speech
-                    ? "Spoken + visible cues"
-                    : "Visible cues only"}
+                    ? "Optional voice API detected"
+                    : "Voice enhancement unavailable"}
                 </strong>
                 <p>
                   {capabilities.speech
-                    ? "Speech is available in this browser. Background or locked-screen delivery is still not guaranteed."
-                    : capabilities.vibration
-                      ? "Speech is unavailable. Large visible cues and supported vibration will be used."
-                      : "Speech and vibration are unavailable. Keep the large cue page visible when possible."}
+                    ? "API presence is not proof of speech playback. Voice may be added, but failure will not remove the independent chime or visual cue."
+                    : "This receiver will not attempt speech."}
                 </p>
               </div>
               {capabilities.speech && (
                 <label className="switch">
-                  <span className="sr-only">Spoken cues on this device</span>
+                  <span className="sr-only">
+                    Spoken enhancement on this device
+                  </span>
                   <input
                     checked={spokenCues}
                     onChange={(event) => setSpokenCues(event.target.checked)}
@@ -1731,8 +2051,8 @@ function HandoffReceive({
                 </strong>
                 <p>
                   {capabilities.wakeLock
-                    ? "This device can request a dim, awake display while Relay is visible."
-                    : "This browser cannot keep the screen awake. The route will recover to the correct phase when reopened."}
+                    ? "Start must obtain the receiver’s screen wake lock before the session is created."
+                    : "This browser cannot keep the screen awake. Recovery preserves the clock, but is not a locked-screen alert."}
                 </p>
               </div>
               {capabilities.wakeLock && (
@@ -1756,6 +2076,18 @@ function HandoffReceive({
                 not create a space or enter space-specific learning.
               </p>
             </div>
+            {launchFailure && (
+              <div className="receive-expired" role="alert">
+                {launchFailure === "chime"
+                  ? "The receiver’s chime did not start. Turn sound off to continue visual-only, or retry; do not rely on an audio cue."
+                  : "The receiver did not grant screen wake. Turn screen wake off to continue, or keep this screen in view."}
+              </div>
+            )}
+            <ReturnTimeBackup
+              compact
+              deadlineAt={now + handoff.durationMinutes * 60_000}
+              durationMinutes={handoff.durationMinutes}
+            />
             {expired ? (
               <div className="receive-expired" role="alert">
                 This handoff has expired. Ask the sender to regenerate it; no
@@ -1764,21 +2096,31 @@ function HandoffReceive({
             ) : (
               <button
                 className="primary-button primary-button--coral primary-button--wide"
-                onClick={() =>
-                  onStart({
+                disabled={launching}
+                onClick={async () => {
+                  setLaunching(true);
+                  setLaunchFailure(null);
+                  const result = await onStart({
+                    cueSoundEnabled,
                     audioEnabled: spokenCues && capabilities.speech,
                     keepAwake: keepAwake && capabilities.wakeLock,
-                  })
-                }
+                  });
+                  setLaunching(false);
+                  if (!result.started) {
+                    setLaunchFailure(result.failure ?? "chime");
+                  }
+                }}
                 type="button"
               >
                 <Icon name="play" size={18} />
-                Start on this device
+                {launching
+                  ? "Verifying this receiver…"
+                  : "Verify and start on this device"}
               </button>
             )}
             <p className="receive-start-note">
-              The durable session and first real cue are created only by this
-              action. Start on one receiving device.
+              Receiver checks are local. This does not import sender cue
+              settings or change this device’s preferences or history.
             </p>
           </section>
         </div>
@@ -1847,6 +2189,7 @@ function HandoffErrorScreen({
 function SettingsPanel({
   preferences,
   onClose,
+  onCueSoundChange,
   onEdit,
   onAudioChange,
   onAlwaysReviewChange,
@@ -1862,6 +2205,7 @@ function SettingsPanel({
 }: {
   preferences: Preferences;
   onClose: () => void;
+  onCueSoundChange: (enabled: boolean) => void;
   onEdit: () => void;
   onAudioChange: (enabled: boolean) => void;
   onAlwaysReviewChange: (enabled: boolean) => void;
@@ -2183,15 +2527,43 @@ function SettingsPanel({
 
         <section className="panel-section panel-setting-row">
           <div>
-            <h3>Spoken cues</h3>
+            <h3>Offline sound cues</h3>
             <p>
-              {canUseSpeech()
-                ? "Announce each station and action."
-                : "Unavailable here; visual cues remain."}
+              {preferences.cueSoundEnabled
+                ? freshCapabilityCheck(preferences.capabilitySnapshot, {
+                    cueSoundEnabled: true,
+                    keepAwake: false,
+                  })
+                  ? "Bundled chime verified recently; return uses two notes."
+                  : "Chosen, but playback needs a launch check."
+                : "Off. Relays are visual-only; use the exact-time timer backup."}
             </p>
           </div>
           <label className="switch">
-            <span className="sr-only">Spoken cues</span>
+            <span className="sr-only">Offline sound cues</span>
+            <input
+              checked={preferences.cueSoundEnabled}
+              disabled={!getRelayCapabilities().audio}
+              onChange={(event) => onCueSoundChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span aria-hidden="true" />
+          </label>
+        </section>
+
+        <section className="panel-section panel-setting-row">
+          <div>
+            <h3>Spoken enhancement</h3>
+            <p>
+              {canUseSpeech()
+                ? preferences.capabilitySnapshot?.speechVerified
+                  ? "Actual voice playback was verified on this device."
+                  : "A speech API is present, but playback is not verified."
+                : "Unavailable here; offline chime and visual cues remain."}
+            </p>
+          </div>
+          <label className="switch">
+            <span className="sr-only">Spoken enhancement</span>
             <input
               checked={preferences.audioEnabled && canUseSpeech()}
               disabled={!canUseSpeech()}
@@ -2207,8 +2579,8 @@ function SettingsPanel({
             <div>
               <h3>Screen-away launch</h3>
               <p>
-                Saved only here. Web cues may stop in the background or on a
-                locked screen.
+                Saved only here. Verified playback applies while this page can
+                play; it does not establish background or locked-screen delivery.
               </p>
             </div>
             <button className="inline-button" onClick={onReviewLaunch} type="button">
@@ -2220,7 +2592,9 @@ function SettingsPanel({
               <h3>Keep dim display awake</h3>
               <p>
                 {getRelayCapabilities().wakeLock
-                  ? "Request screen wake only during an active relay."
+                  ? preferences.capabilitySnapshot?.wakeVerified
+                    ? "A recent launch obtained screen wake; every chosen launch requests it again."
+                    : "Chosen launches must obtain screen wake before departure."
                   : "Unavailable in this browser."}
               </p>
             </div>
@@ -2392,13 +2766,12 @@ function phaseHeader(
 }
 
 type WakeLockStatus = "idle" | "requesting" | "held" | "released" | "failed";
+const releasedWakeLocks = new WeakSet<WakeLockSentinelLike>();
 
-interface WakeLockSentinelLike {
-  release: () => Promise<void>;
-  addEventListener: (type: "release", listener: () => void) => void;
-}
-
-function useWakeLock(enabled: boolean) {
+function useWakeLock(
+  enabled: boolean,
+  initialSentinel: WakeLockSentinelLike | null,
+) {
   const [status, setStatus] = useState<WakeLockStatus>("idle");
 
   useEffect(() => {
@@ -2407,19 +2780,20 @@ function useWakeLock(enabled: boolean) {
         request: (type: "screen") => Promise<WakeLockSentinelLike>;
       };
     };
-    let sentinel: WakeLockSentinelLike | null = null;
+    let sentinel: WakeLockSentinelLike | null =
+      enabled &&
+      initialSentinel &&
+      !initialSentinel.released &&
+      !releasedWakeLocks.has(initialSentinel)
+        ? initialSentinel
+        : null;
     let disposed = false;
 
     async function release() {
       const held = sentinel;
       sentinel = null;
-      if (held) {
-        try {
-          await held.release();
-        } catch {
-          // A browser may already have released it on visibility change.
-        }
-      }
+      if (held) releasedWakeLocks.add(held);
+      await releaseScreenWake(held);
     }
 
     async function request() {
@@ -2442,7 +2816,10 @@ function useWakeLock(enabled: boolean) {
         setStatus("held");
         next.addEventListener("release", () => {
           sentinel = null;
-          if (!disposed) setStatus("released");
+          if (!disposed) {
+            setStatus("released");
+            if (document.visibilityState === "visible") void request();
+          }
         });
       } catch {
         if (!disposed) setStatus("failed");
@@ -2457,6 +2834,16 @@ function useWakeLock(enabled: boolean) {
       setStatus("idle");
     } else if (!wakeNavigator.wakeLock) {
       setStatus("failed");
+    } else if (sentinel && !sentinel.released) {
+      setStatus("held");
+      sentinel.addEventListener("release", () => {
+        sentinel = null;
+        if (!disposed) {
+          setStatus("released");
+          if (document.visibilityState === "visible") void request();
+        }
+      });
+      document.addEventListener("visibilitychange", handleVisibility);
     } else {
       void request();
       document.addEventListener("visibilitychange", handleVisibility);
@@ -2467,13 +2854,14 @@ function useWakeLock(enabled: boolean) {
       document.removeEventListener("visibilitychange", handleVisibility);
       void release();
     };
-  }, [enabled]);
+  }, [enabled, initialSentinel]);
 
   return status;
 }
 
 function RelaySession({
   session,
+  initialWakeLock,
   fallbackFeeling,
   fallbackSpaceMode,
   onCapabilityFailure,
@@ -2481,15 +2869,20 @@ function RelaySession({
   onFinish,
 }: {
   session: ActiveSession;
+  initialWakeLock: WakeLockSentinelLike | null;
   fallbackFeeling: Feeling;
   fallbackSpaceMode: SpaceMode;
-  onCapabilityFailure: (kind: "speech" | "wake") => void;
+  onCapabilityFailure: (kind: "chime" | "speech" | "wake") => void;
   onChange: (session: ActiveSession) => void;
   onFinish: (session: ActiveSession) => void;
 }) {
   const [clock, setClock] = useState(Date.now());
   const [speechFailed, setSpeechFailed] = useState(
-    session.cueDeliveryFailed || (session.audioEnabled && !canUseSpeech()),
+    session.speechDeliveryFailed ||
+      (session.audioEnabled && !canUseSpeech()),
+  );
+  const [cueFailed, setCueFailed] = useState(
+    session.cueDeliveryFailed,
   );
   const sessionRef = useRef(session);
   const finishing = useRef(false);
@@ -2497,6 +2890,7 @@ function RelaySession({
   const step = session.route[session.currentStepIndex];
   const wakeStatus = useWakeLock(
     session.keepAwake && !session.paused && session.status === "active",
+    initialWakeLock,
   );
 
   const commit = useCallback(
@@ -2515,18 +2909,30 @@ function RelaySession({
       }
       const cue = next.route[next.currentStepIndex]?.spokenCue;
       if (!cue) return;
-      if (next.audioEnabled) {
-        speak(cue, () => {
-          setSpeechFailed(true);
-          onCapabilityFailure("speech");
+      const marked = force ? next : markCueAnnounced(next);
+      commit(marked);
+      if (next.cueSoundEnabled) {
+        void playCueSignal(
+          next.route[next.currentStepIndex]?.phase === "return"
+            ? "return"
+            : "phase",
+        ).then((result) => {
+          if (!result.ok) {
+            setCueFailed(true);
+            onCapabilityFailure("chime");
+          }
         });
       } else {
         navigator.vibrate?.([120, 80, 120]);
       }
-      const marked = markCueAnnounced(
-        force ? { ...next, lastAnnouncedStepId: null } : next,
-      );
-      commit(marked);
+      if (next.audioEnabled) {
+        speak(cue, {
+          onError: () => {
+            setSpeechFailed(true);
+            onCapabilityFailure("speech");
+          },
+        });
+      }
     },
     [commit, onCapabilityFailure],
   );
@@ -2536,25 +2942,34 @@ function RelaySession({
       if (finishing.current) return;
       finishing.current = true;
       let finished = next;
-      if (next.lastAnnouncedStepId !== "__complete__") {
+      if (shouldIssueFinalCue(next)) {
+        finished = markFinalCueIssued(next);
+        sessionRef.current = finished;
+        onFinish(finished);
+        if (next.cueSoundEnabled) {
+          void playCueSignal("return").then((result) => {
+            if (!result.ok) {
+              setCueFailed(true);
+              onCapabilityFailure("chime");
+            }
+          });
+        } else {
+          navigator.vibrate?.([180, 80, 180, 80, 240]);
+        }
         if (next.audioEnabled) {
           speak(
             next.endedEarly
               ? "Your relay has ended. Return when you are ready."
-              : "You are back at the boundary. Return when you are ready.",
-            () => {
-              setSpeechFailed(true);
-              onCapabilityFailure("speech");
+              : "The return boundary is here. Return when you are ready.",
+            {
+              onError: () => {
+                setSpeechFailed(true);
+                onCapabilityFailure("speech");
+              },
             },
           );
-        } else {
-          navigator.vibrate?.([140, 90, 140]);
         }
-        finished = {
-          ...next,
-          lastAnnouncedStepId: "__complete__",
-          updatedAt: Date.now(),
-        };
+        return;
       }
       sessionRef.current = finished;
       onFinish(finished);
@@ -2709,6 +3124,7 @@ function RelaySession({
           <strong>
             {session.paused ? "Relay paused" : formatBoundary(totalRemaining)}
           </strong>
+          <small>Return at {formatLocalReturnTime(session.deadlineAt)}</small>
         </div>
         <button className="end-button" onClick={endEarly} type="button">
           End early
@@ -2740,18 +3156,30 @@ function RelaySession({
           <div className="cue-divider" />
           <p>{step.action}</p>
           {session.paused && (
-            <div className="paused-note">Take your time. The relay will wait.</div>
+            <div className="paused-note">
+              Cues are paused. The return clock keeps its original time.
+            </div>
           )}
         </article>
 
-        {speechFailed && (
+        {cueFailed && (
           <div className="fallback-banner" role="status">
             <Icon name="spark" size={18} />
             <p>
-              <strong>Audio isn’t available here.</strong> Keep this large cue
-              visible. The page title also changes at every phase, and vibration is
-              used where supported. Your route and clock are unchanged; launch
-              setup will be ready to revise next time.
+              <strong>The chime failed during this relay.</strong> Do not rely
+              on later web sound. Keep the large cue visible and use a device
+              timer for {formatLocalReturnTime(session.deadlineAt)}. The route
+              and absolute deadline are unchanged.
+            </p>
+          </div>
+        )}
+        {speechFailed && !cueFailed && (
+          <div className="fallback-banner fallback-banner--quiet" role="status">
+            <Icon name="sound" size={18} />
+            <p>
+              <strong>Voice did not start.</strong> The independent chime and
+              visible cue remain active; speech has been turned off for this
+              relay.
             </p>
           </div>
         )}
@@ -2833,7 +3261,8 @@ function RelaySession({
         )}
         <p className="session-footnote">
           Nothing to tap at the station. If the browser sleeps, Relay catches up
-          when it returns.
+          when it returns; it does not claim a missed locked-screen cue was
+          delivered.
         </p>
       </section>
     </main>
@@ -2844,18 +3273,23 @@ function Completion({
   session,
   interrupted,
   transferred,
+  onBoundarySignal,
   onExtend,
   onOutcome,
 }: {
   session: ActiveSession;
   interrupted: boolean;
   transferred: boolean;
+  onBoundarySignal: (session: ActiveSession) => void;
   onExtend: () => void;
   onOutcome: (outcome: RouteOutcome) => void;
 }) {
   useEffect(() => {
     document.title = "Return when ready · Break Relay";
-  }, []);
+    if (shouldIssueFinalCue(session)) {
+      onBoundarySignal(session);
+    }
+  }, [onBoundarySignal, session]);
 
   return (
     <main className="completion-page">
@@ -2880,7 +3314,7 @@ function Completion({
         <h1>
           {session.endedEarly
             ? "Meet the day from here."
-            : "You’re back at the boundary."}
+            : "Your return boundary is here."}
         </h1>
         <p className="completion-copy">
           {session.endedEarly
@@ -3018,6 +3452,10 @@ export default function App() {
   const [readinessReturn, setReadinessReturn] = useState<"home" | "tune">(
     "home",
   );
+  const [launchFailure, setLaunchFailure] =
+    useState<LaunchFailure | null>(null);
+  const [wakeSentinel, setWakeSentinel] =
+    useState<WakeLockSentinelLike | null>(null);
 
   useEffect(() => {
     if (
@@ -3139,12 +3577,33 @@ export default function App() {
   const flagSessionCapabilityFailure = useCallback(
     (
       sessionId: string,
-      kind: "speech" | "wake",
+      kind: "chime" | "speech" | "wake",
       rememberForLaunch = true,
     ) => {
       if (rememberForLaunch) {
         setPreferences((current) => {
-          const next = { ...current, launchNeedsReview: true };
+          const snapshot = current.capabilitySnapshot;
+          const next = {
+            ...current,
+            audioEnabled:
+              kind === "speech" ? false : current.audioEnabled,
+            launchNeedsReview:
+              kind === "speech" ? current.launchNeedsReview : true,
+            capabilitySnapshot: snapshot
+              ? {
+                  ...snapshot,
+                  ...(kind === "chime"
+                    ? { chimeVerified: false }
+                    : {}),
+                  ...(kind === "speech"
+                    ? { speechVerified: false }
+                    : {}),
+                  ...(kind === "wake"
+                    ? { wakeVerified: false }
+                    : {}),
+                }
+              : null,
+          };
           savePreferences(next);
           return next;
         });
@@ -3153,9 +3612,15 @@ export default function App() {
         if (!current || current.id !== sessionId) return current;
         const next = {
           ...current,
+          cueSoundEnabled:
+            kind === "chime" ? false : current.cueSoundEnabled,
           audioEnabled: kind === "speech" ? false : current.audioEnabled,
           cueDeliveryFailed:
-            kind === "speech" ? true : current.cueDeliveryFailed,
+            kind === "chime" ? true : current.cueDeliveryFailed,
+          speechDeliveryFailed:
+            kind === "speech"
+              ? true
+              : current.speechDeliveryFailed,
           wakeLockFailed: kind === "wake" ? true : current.wakeLockFailed,
           updatedAt: Date.now(),
         };
@@ -3175,6 +3640,7 @@ export default function App() {
     setDraft(source);
     setDraftSpace(space);
     setPreparedForLaunch(prepared);
+    setLaunchFailure(null);
     setReadinessReturn(returnTo);
     setScreen("readiness");
   }
@@ -3252,48 +3718,36 @@ export default function App() {
     }
   }
 
-  function startRelay(
+  async function startRelay(
     source: Preferences,
     sourceSpace: RelaySpace,
     options: {
+      cueSoundEnabled: boolean;
       audioEnabled: boolean;
       keepAwake: boolean;
       alwaysReviewLaunch: boolean;
     },
     prepared?: PreparedRouteSnapshot,
-  ) {
-    if (launchingRef.current || session?.status === "active") return;
+  ): Promise<LaunchAttempt> {
+    if (launchingRef.current || session?.status === "active") {
+      return { started: false };
+    }
     const now = Date.now();
     const snapshot =
       prepared ??
       prepareRouteSnapshot(source, sourceSpace, routePreviewSeed);
     launchingRef.current = true;
-    const nextPreferences = {
-      ...source,
-      version: 2 as const,
-      spaces: source.spaces.map((space) =>
-        space.id === sourceSpace.id ? sourceSpace : space,
-      ),
-      activeSpaceId: sourceSpace.id,
-      audioEnabled: options.audioEnabled,
-      keepAwake: options.keepAwake,
-      alwaysReviewLaunch: options.alwaysReviewLaunch,
-      launchSetupComplete: true,
-      launchNeedsReview: false,
-      capabilitySnapshot: launchCapabilitySnapshot(),
-      hasOnboarded: true,
-    };
-    updatePreferences(nextPreferences);
-    setDraft(nextPreferences);
+    setLaunchFailure(null);
     const route = snapshot.route;
     let nextSession = createSession({
       route,
-      durationMinutes: nextPreferences.duration,
-      audioEnabled: options.audioEnabled,
+      durationMinutes: source.duration,
+      cueSoundEnabled: options.cueSoundEnabled,
+      audioEnabled: options.audioEnabled && canUseSpeech(),
       keepAwake: options.keepAwake,
       routeContext: {
         spaceId: sourceSpace.id,
-        feeling: nextPreferences.feeling,
+        feeling: source.feeling,
         spaceMode: sourceSpace.spaceMode,
         steps: routeMemoryContextSteps(route),
       },
@@ -3302,42 +3756,158 @@ export default function App() {
       now,
       spaceSnapshot: sourceSpace,
     });
-    nextSession = markCueAnnounced(nextSession);
+
+    const chimePromise = options.cueSoundEnabled
+      ? playCueSignal("phase")
+      : Promise.resolve({ ok: true as const });
+    const wakePromise = options.keepAwake
+      ? requestScreenWake()
+      : Promise.resolve(null);
+    const [chimeResult, wakeResult] = await Promise.all([
+      chimePromise,
+      wakePromise,
+    ]);
+    const failedWake =
+      options.keepAwake && (!wakeResult || !wakeResult.ok);
+    if (!chimeResult.ok || failedWake) {
+      if (wakeResult?.ok) await releaseScreenWake(wakeResult.sentinel);
+      launchingRef.current = false;
+      const failure: LaunchFailure = !chimeResult.ok ? "chime" : "wake";
+      setLaunchFailure(failure);
+      const failedPreferences = {
+        ...source,
+        cueSoundEnabled: options.cueSoundEnabled,
+        audioEnabled: options.audioEnabled,
+        keepAwake: options.keepAwake,
+        alwaysReviewLaunch: options.alwaysReviewLaunch,
+        launchNeedsReview: true,
+        capabilitySnapshot: launchCapabilitySnapshot({
+          chimeVerified: options.cueSoundEnabled && chimeResult.ok,
+          visualOnlyAcknowledged: !options.cueSoundEnabled,
+          speechVerified: false,
+          wakeVerified:
+            options.keepAwake && Boolean(wakeResult?.ok),
+        }),
+      };
+      updatePreferences(failedPreferences);
+      setDraft(failedPreferences);
+      return { started: false, failure };
+    }
+
+    let launched = false;
+    let speechFailed = false;
+    let speechStarted = false;
+    if (nextSession.audioEnabled) {
+      speak(route[0].spokenCue, {
+        onStart: () => {
+          speechStarted = true;
+          if (launched) {
+            setPreferences((current) => {
+              if (!current.capabilitySnapshot) return current;
+              const updated = {
+                ...current,
+                capabilitySnapshot: {
+                  ...current.capabilitySnapshot,
+                  speechVerified: true,
+                },
+              };
+              savePreferences(updated);
+              return updated;
+            });
+          }
+        },
+        onError: () => {
+          speechFailed = true;
+          if (launched) {
+            flagSessionCapabilityFailure(nextSession.id, "speech");
+          }
+        },
+      });
+    }
+    if (!options.cueSoundEnabled) {
+      navigator.vibrate?.([120, 80, 120]);
+    }
+    nextSession = markCueAnnounced({
+      ...nextSession,
+      audioEnabled: nextSession.audioEnabled && !speechFailed,
+      speechDeliveryFailed: speechFailed,
+    });
+    const nextPreferences = {
+      ...source,
+      version: 2 as const,
+      spaces: source.spaces.map((space) =>
+        space.id === sourceSpace.id ? sourceSpace : space,
+      ),
+      activeSpaceId: sourceSpace.id,
+      cueSoundEnabled: options.cueSoundEnabled,
+      audioEnabled: options.audioEnabled && !speechFailed,
+      keepAwake: options.keepAwake,
+      alwaysReviewLaunch: options.alwaysReviewLaunch,
+      launchSetupComplete: true,
+      launchNeedsReview: false,
+      capabilitySnapshot: launchCapabilitySnapshot({
+        chimeVerified: options.cueSoundEnabled,
+        visualOnlyAcknowledged: !options.cueSoundEnabled,
+        speechVerified: speechStarted,
+        wakeVerified: options.keepAwake,
+      }),
+      hasOnboarded: true,
+    };
+    updatePreferences(nextPreferences);
+    setDraft(nextPreferences);
+    if (wakeResult?.ok) setWakeSentinel(wakeResult.sentinel);
     commitSession(nextSession);
     setInterruptedCompletion(false);
     setScreen("session");
-    if (options.audioEnabled) {
-      speak(route[0].spokenCue, () =>
-        flagSessionCapabilityFailure(nextSession.id, "speech"),
-      );
-    } else {
-      navigator.vibrate?.([120, 80, 120]);
-    }
+    launched = true;
+    return { started: true };
   }
 
-  function startReceivedHandoff(options: {
+  async function startReceivedHandoff(options: {
+    cueSoundEnabled: boolean;
     audioEnabled: boolean;
     keepAwake: boolean;
-  }) {
-    if (!handoff || launchingRef.current) return;
+  }): Promise<LaunchAttempt> {
+    if (!handoff || launchingRef.current) return { started: false };
     if (Date.now() >= handoff.expiresAt) {
       setHandoffFailure("expired");
       setScreen("handoffError");
-      return;
+      return { started: false };
     }
     const existing = loadSession();
     if (existing) {
       setSession(existing);
       setInterruptedCompletion(existing.status === "complete");
       setScreen(existing.status === "complete" ? "complete" : "recover");
-      return;
+      return { started: false };
     }
     launchingRef.current = true;
+    const chimePromise = options.cueSoundEnabled
+      ? playCueSignal("phase")
+      : Promise.resolve({ ok: true as const });
+    const wakePromise = options.keepAwake
+      ? requestScreenWake()
+      : Promise.resolve(null);
+    const [chimeResult, wakeResult] = await Promise.all([
+      chimePromise,
+      wakePromise,
+    ]);
+    const failedWake =
+      options.keepAwake && (!wakeResult || !wakeResult.ok);
+    if (!chimeResult.ok || failedWake) {
+      if (wakeResult?.ok) await releaseScreenWake(wakeResult.sentinel);
+      launchingRef.current = false;
+      return {
+        started: false,
+        failure: !chimeResult.ok ? "chime" : "wake",
+      };
+    }
     let nextSession = createSession({
       id: `handoff:${handoff.id}`,
       source: "handoff",
       route: structuredClone(handoff.route),
       durationMinutes: handoff.durationMinutes,
+      cueSoundEnabled: options.cueSoundEnabled,
       audioEnabled: options.audioEnabled && canUseSpeech(),
       keepAwake: options.keepAwake && getRelayCapabilities().wakeLock,
       routeContext: {
@@ -3350,17 +3920,35 @@ export default function App() {
       unavailableStationIds: [...handoff.unavailableStationIds],
       spaceSnapshot: structuredClone(handoff.space),
     });
+    let launched = false;
+    let speechFailed = false;
+    if (nextSession.audioEnabled) {
+      speak(nextSession.route[0].spokenCue, {
+        onError: () => {
+          speechFailed = true;
+          if (launched) {
+            flagSessionCapabilityFailure(
+              nextSession.id,
+              "speech",
+              false,
+            );
+          }
+        },
+      });
+    }
+    if (!options.cueSoundEnabled) navigator.vibrate?.([120, 80, 120]);
+    nextSession = {
+      ...nextSession,
+      audioEnabled: nextSession.audioEnabled && !speechFailed,
+      speechDeliveryFailed: speechFailed,
+    };
     nextSession = markCueAnnounced(nextSession);
+    if (wakeResult?.ok) setWakeSentinel(wakeResult.sentinel);
     commitSession(nextSession);
     setInterruptedCompletion(false);
     setScreen("session");
-    if (nextSession.audioEnabled) {
-      speak(nextSession.route[0].spokenCue, () =>
-        flagSessionCapabilityFailure(nextSession.id, "speech", false),
-      );
-    } else {
-      navigator.vibrate?.([120, 80, 120]);
-    }
+    launched = true;
+    return { started: true };
   }
 
   const finishSession = useCallback(
@@ -3432,6 +4020,7 @@ export default function App() {
     return (
       <HandoffReceive
         handoff={handoff}
+        receiverPreferences={preferences}
         onCancel={() => {
           setHandoff(null);
           setScreen(preferences.hasOnboarded ? "home" : "stations");
@@ -3508,6 +4097,7 @@ export default function App() {
   if (screen === "readiness") {
     return (
       <Readiness
+        initialFailure={launchFailure}
         onBack={() => setScreen(readinessReturn)}
         onStart={(options) =>
           startRelay(
@@ -3542,13 +4132,37 @@ export default function App() {
             return;
           }
           if (!current.paused) {
-            const cue = current.route[current.currentStepIndex].spokenCue;
-            if (current.audioEnabled) speak(cue);
-            else navigator.vibrate?.([120, 80, 120]);
-            current = markCueAnnounced({
-              ...current,
-              lastAnnouncedStepId: null,
-            });
+            if (shouldAnnounceCue(current)) {
+              const cue = current.route[current.currentStepIndex].spokenCue;
+              if (current.cueSoundEnabled) {
+                void playCueSignal(
+                  current.route[current.currentStepIndex].phase === "return"
+                    ? "return"
+                    : "phase",
+                ).then((result) => {
+                  if (!result.ok) {
+                    flagSessionCapabilityFailure(
+                      current.id,
+                      "chime",
+                      current.source !== "handoff",
+                    );
+                  }
+                });
+              } else {
+                navigator.vibrate?.([120, 80, 120]);
+              }
+              if (current.audioEnabled) {
+                speak(cue, {
+                  onError: () =>
+                    flagSessionCapabilityFailure(
+                      current.id,
+                      "speech",
+                      current.source !== "handoff",
+                    ),
+                });
+              }
+              current = markCueAnnounced(current);
+            }
           }
           commitSession(current);
           setScreen("session");
@@ -3566,6 +4180,7 @@ export default function App() {
         }
         fallbackSpaceMode={session.spaceSnapshot.spaceMode}
         key={session.id}
+        initialWakeLock={wakeSentinel}
         onCapabilityFailure={(kind) =>
           flagSessionCapabilityFailure(
             session.id,
@@ -3584,6 +4199,33 @@ export default function App() {
     return (
       <Completion
         interrupted={interruptedCompletion}
+        onBoundarySignal={(current) => {
+          const marked = markFinalCueIssued(current);
+          commitSession(marked);
+          if (current.cueSoundEnabled) {
+            void playCueSignal("return").then((result) => {
+              if (!result.ok) {
+                flagSessionCapabilityFailure(
+                  current.id,
+                  "chime",
+                  current.source !== "handoff",
+                );
+              }
+            });
+          } else {
+            navigator.vibrate?.([180, 80, 180, 80, 240]);
+          }
+          if (current.audioEnabled) {
+            speak("The return boundary is here. Return when you are ready.", {
+              onError: () =>
+                flagSessionCapabilityFailure(
+                  current.id,
+                  "speech",
+                  current.source !== "handoff",
+                ),
+            });
+          }
+        }}
         onExtend={() => {
           let extension = replaceWithExtension(
             session,
@@ -3594,8 +4236,29 @@ export default function App() {
             ],
           );
           const cue = extension.route[0].spokenCue;
-          if (extension.audioEnabled) speak(cue);
-          else navigator.vibrate?.([120, 80, 120]);
+          if (extension.cueSoundEnabled) {
+            void playCueSignal("phase").then((result) => {
+              if (!result.ok) {
+                flagSessionCapabilityFailure(
+                  extension.id,
+                  "chime",
+                  extension.source !== "handoff",
+                );
+              }
+            });
+          } else {
+            navigator.vibrate?.([120, 80, 120]);
+          }
+          if (extension.audioEnabled) {
+            speak(cue, {
+              onError: () =>
+                flagSessionCapabilityFailure(
+                  extension.id,
+                  "speech",
+                  extension.source !== "handoff",
+                ),
+            });
+          }
           extension = markCueAnnounced(extension);
           commitSession(extension);
           setInterruptedCompletion(false);
@@ -3640,16 +4303,27 @@ export default function App() {
             );
             return;
           }
-          startRelay(
+          void startRelay(
             preferences,
             homeSpace,
             {
+              cueSoundEnabled: preferences.cueSoundEnabled,
               audioEnabled: preferences.audioEnabled,
               keepAwake: preferences.keepAwake,
               alwaysReviewLaunch: preferences.alwaysReviewLaunch,
             },
             preparedHomeRoute,
-          );
+          ).then((result) => {
+            if (!result.started && result.failure) {
+              openReadiness(
+                loadPreferences(),
+                "home",
+                homeSpace,
+                preparedHomeRoute,
+              );
+              setLaunchFailure(result.failure);
+            }
+          });
         }}
         preparedRoute={preparedHomeRoute.route}
         preferences={preferences}
@@ -3673,7 +4347,20 @@ export default function App() {
             updatePreferences({ ...preferences, alwaysReviewLaunch })
           }
           onAudioChange={(audioEnabled) =>
-            updatePreferences({ ...preferences, audioEnabled })
+            updatePreferences({
+              ...preferences,
+              audioEnabled,
+              launchNeedsReview: audioEnabled
+                ? true
+                : preferences.launchNeedsReview,
+            })
+          }
+          onCueSoundChange={(cueSoundEnabled) =>
+            updatePreferences({
+              ...preferences,
+              cueSoundEnabled,
+              launchNeedsReview: true,
+            })
           }
           onClose={() => setSettingsOpen(false)}
           onClearHistory={() => {

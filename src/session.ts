@@ -11,6 +11,7 @@ import {
 } from "./routeMemory";
 
 const SECOND = 1000;
+export const FINAL_CUE_ID = "__complete__";
 
 function routeDurationMs(route: RouteStep[]) {
   return route.reduce(
@@ -40,6 +41,7 @@ function reachedAt(route: RouteStep[], index: number, existing: string[]) {
 export function createSession({
   route,
   durationMinutes,
+  cueSoundEnabled = true,
   audioEnabled,
   keepAwake,
   extensionUsed = false,
@@ -57,6 +59,7 @@ export function createSession({
 }: {
   route: RouteStep[];
   durationMinutes: number;
+  cueSoundEnabled?: boolean;
   audioEnabled: boolean;
   keepAwake: boolean;
   extensionUsed?: boolean;
@@ -74,6 +77,7 @@ export function createSession({
 }): ActiveSession {
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
+  const deadlineAt = now + routeDurationMs(route);
   return {
     version: 7,
     id: id ?? createSessionId(now),
@@ -91,37 +95,38 @@ export function createSession({
     rerouteCount,
     startedAt: now,
     stepDeadlineAt: now + firstStepMs,
-    deadlineAt: now + routeDurationMs(route),
+    deadlineAt,
+    originalDeadlineAt: deadlineAt,
     currentStepIndex: 0,
     paused: false,
     pausedAt: null,
     status: "active",
     endedEarly: false,
     extensionUsed,
+    cueSoundEnabled,
     audioEnabled,
     keepAwake,
     cueDeliveryFailed: false,
+    speechDeliveryFailed: false,
     wakeLockFailed: false,
     durationMinutes,
     completedAt: null,
     lastAnnouncedStepId: null,
+    announcedCueIds: [],
     updatedAt: now,
   };
 }
 
 export function remainingMs(session: ActiveSession, now = Date.now()) {
   if (session.status === "complete") return 0;
-  const reference = session.paused && session.pausedAt !== null
-    ? session.pausedAt
-    : now;
-  return Math.max(0, session.deadlineAt - reference);
+  return Math.max(0, session.deadlineAt - now);
 }
 
 export function reconcileSession(
   session: ActiveSession,
   now = Date.now(),
 ): ActiveSession {
-  if (session.status === "complete" || session.paused) return session;
+  if (session.status === "complete") return session;
 
   if (now >= session.deadlineAt) {
     return {
@@ -129,11 +134,15 @@ export function reconcileSession(
       currentStepIndex: session.route.length - 1,
       status: "complete",
       completedAt: session.deadlineAt,
+      paused: false,
+      pausedAt: null,
       eligibleStations: [],
       unavailableStationIds: [],
       updatedAt: now,
     };
   }
+
+  if (session.paused) return session;
 
   let currentStepIndex = session.currentStepIndex;
   let stepDeadlineAt = session.stepDeadlineAt;
@@ -186,15 +195,12 @@ export function resumeSession(session: ActiveSession, now = Date.now()) {
   ) {
     return reconcileSession(session, now);
   }
-  const pausedFor = Math.max(0, now - session.pausedAt);
-  return {
+  return reconcileSession({
     ...session,
     paused: false,
     pausedAt: null,
-    stepDeadlineAt: session.stepDeadlineAt + pausedFor,
-    deadlineAt: session.deadlineAt + pausedFor,
     updatedAt: now,
-  };
+  }, now);
 }
 
 export function skipStep(session: ActiveSession, now = Date.now()) {
@@ -345,21 +351,45 @@ export function completeSession(
 
 export function markCueAnnounced(session: ActiveSession, now = Date.now()) {
   const stepId = session.route[session.currentStepIndex]?.id;
-  if (!stepId || session.lastAnnouncedStepId === stepId) return session;
+  if (!stepId || session.announcedCueIds.includes(stepId)) return session;
   return {
     ...session,
     lastAnnouncedStepId: stepId,
+    announcedCueIds: [...session.announcedCueIds, stepId],
     updatedAt: now,
   };
 }
 
 export function shouldAnnounceCue(session: ActiveSession) {
+  const stepId = session.route[session.currentStepIndex]?.id;
   return (
     session.status === "active" &&
     !session.paused &&
-    session.route[session.currentStepIndex]?.id !==
-      session.lastAnnouncedStepId
+    !!stepId &&
+    !session.announcedCueIds.includes(stepId)
   );
+}
+
+export function shouldIssueFinalCue(session: ActiveSession) {
+  return (
+    session.status === "complete" &&
+    !session.announcedCueIds.includes(FINAL_CUE_ID)
+  );
+}
+
+export function markFinalCueIssued(
+  session: ActiveSession,
+  now = Date.now(),
+) {
+  if (!shouldIssueFinalCue(session)) return session;
+  return {
+    ...session,
+    lastAnnouncedStepId: FINAL_CUE_ID,
+    announcedCueIds: [
+      ...new Set([...session.announcedCueIds, FINAL_CUE_ID]),
+    ],
+    updatedAt: now,
+  };
 }
 
 export function replaceWithExtension(
@@ -371,6 +401,7 @@ export function replaceWithExtension(
     ...createSession({
       route,
       durationMinutes: session.durationMinutes,
+      cueSoundEnabled: session.cueSoundEnabled,
       audioEnabled: session.audioEnabled,
       keepAwake: session.keepAwake,
       extensionUsed: true,
@@ -384,5 +415,6 @@ export function replaceWithExtension(
       spaceSnapshot: session.spaceSnapshot,
     }),
     extensionUsed: true,
+    originalDeadlineAt: session.originalDeadlineAt,
   };
 }

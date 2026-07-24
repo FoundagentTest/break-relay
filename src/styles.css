@@ -2130,6 +2130,12 @@ a:focus-visible {
   font-size: 0.7rem;
 }
 
+.session-boundary small {
+  margin-top: 3px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.56rem;
+}
+
 .end-button {
   justify-self: end;
   padding: 0 13px;
@@ -2298,6 +2304,11 @@ a:focus-visible {
 
 .fallback-banner strong {
   color: rgba(255, 255, 255, 0.9);
+}
+
+.fallback-banner--quiet {
+  border-color: rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.04);
 }
 
 .session-controls {
@@ -3085,6 +3096,10 @@ a:focus-visible {
   grid-template-columns: 48px 1fr;
 }
 
+.capability-card--subtle {
+  background: rgba(240, 242, 232, 0.6);
+}
+
 .capability-icon {
   display: grid;
   width: 48px;
@@ -3266,6 +3281,98 @@ a:focus-visible {
   color: rgba(255, 255, 255, 0.58);
   font-size: 0.62rem;
   text-align: center;
+}
+
+.launch-failure {
+  padding: 14px;
+  margin: 0 0 18px;
+  border: 1px solid rgba(255, 178, 155, 0.45);
+  border-radius: 12px;
+  background: rgba(227, 107, 75, 0.16);
+}
+
+.launch-failure strong,
+.launch-failure p {
+  display: block;
+  margin: 0;
+}
+
+.launch-failure strong {
+  margin-bottom: 5px;
+  color: #ffe5dc;
+  font-size: 0.74rem;
+}
+
+.launch-failure p {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.64rem;
+  line-height: 1.5;
+}
+
+.return-backup {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 253, 248, 0.7);
+}
+
+.return-backup p {
+  margin: 0 0 10px;
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  line-height: 1.5;
+}
+
+.return-backup p:first-child {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.return-backup time {
+  color: var(--ink);
+  font-size: 0.75rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.return-backup .secondary-button {
+  min-height: 40px;
+  padding: 9px 13px;
+  color: var(--ink);
+  font-size: 0.65rem;
+}
+
+.return-backup > span {
+  display: block;
+  min-height: 16px;
+  margin-top: 7px;
+  color: var(--ink-soft);
+  font-size: 0.6rem;
+}
+
+.boundary-card .return-backup,
+.receive-capabilities .return-backup {
+  margin: 0 0 18px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.boundary-card .return-backup p,
+.boundary-card .return-backup > span,
+.receive-capabilities .return-backup p,
+.receive-capabilities .return-backup > span {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.boundary-card .return-backup time,
+.receive-capabilities .return-backup time {
+  color: var(--white);
+}
+
+.return-backup--compact {
+  padding: 14px;
 }
 
 .readiness-shell > .privacy-note {
@@ -3863,8 +3970,16 @@ a:focus-visible {
   }
 
   .session-header {
-    min-height: 80px;
+    min-height: 116px;
+    align-items: center;
+    padding-top: 8px;
     grid-template-columns: 1fr auto;
+    grid-template-rows: 44px 1fr;
+  }
+
+  .session-header .brand {
+    grid-column: 1;
+    grid-row: 1;
   }
 
   .session-header .brand span:last-child {
@@ -3872,18 +3987,21 @@ a:focus-visible {
   }
 
   .session-boundary {
-    position: absolute;
-    left: 50%;
-    transform: translateX(-50%);
+    position: static;
+    padding-bottom: 10px;
+    grid-column: 1 / -1;
+    grid-row: 2;
+    transform: none;
   }
 
   .end-button {
     grid-column: 2;
+    grid-row: 1;
   }
 
   .session-shell {
     width: calc(100% - 28px);
-    min-height: calc(100vh - 80px);
+    min-height: calc(100vh - 116px);
     justify-content: flex-start;
     padding: 35px 0 25px;
   }
