@@ -1,14 +1,33 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { buildRoute, STATION_PRESETS } from "./data";
-import { STORAGE_KEY } from "./storage";
+import { createSession } from "./session";
+import {
+  SESSION_STORAGE_KEY,
+  STORAGE_KEY,
+  saveSession,
+} from "./storage";
+
+const availableSpeech = window.speechSynthesis;
+const availableUtterance = window.SpeechSynthesisUtterance;
 
 describe("Break Relay", () => {
   beforeEach(() => {
     window.localStorage.clear();
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: availableSpeech,
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: availableUtterance,
+    });
   });
 
   it("covers setup, tailored launch, in-session controls, extension, and return", async () => {
@@ -35,11 +54,25 @@ describe("Break Relay", () => {
     await user.click(screen.getByText("5", { selector: ".duration-picker strong" }));
     await user.click(screen.getByRole("button", { name: /Start this relay/ }));
 
+    expect(
+      screen.getByRole("heading", {
+        name: "Set a boundary this browser can keep.",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/locked-screen delivery still depends/i),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Play cue check" }));
+    vi.mocked(window.speechSynthesis.speak).mockClear();
+    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Repeat cue" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Skip stop" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "End early" })).toBeInTheDocument();
     expect(screen.getByText(/About 5 min remain/)).toBeInTheDocument();
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).not.toBeNull();
 
     await user.click(screen.getByRole("button", { name: "Pause" }));
     expect(screen.getByText("Relay paused")).toBeInTheDocument();
@@ -79,6 +112,7 @@ describe("Break Relay", () => {
     expect(stored.feeling).toBe("eyes");
     expect(stored.duration).toBe(5);
     expect(stored.hasOnboarded).toBe(true);
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
 
   it("lets a returning user edit stations and reset all local data", async () => {
@@ -123,6 +157,152 @@ describe("Break Relay", () => {
       }),
     ).toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+  });
+
+  it("offers an interrupted relay for coherent resume or discard", async () => {
+    const user = userEvent.setup();
+    const preferences = {
+      stations: STATION_PRESETS.slice(0, 3),
+      feeling: "noise" as const,
+      duration: 5 as const,
+      spaceMode: "any" as const,
+      audioEnabled: true,
+      hasOnboarded: true,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    const route = buildRoute(preferences.stations, "noise", 5, 10);
+    saveSession(
+      createSession({
+        route,
+        durationMinutes: 5,
+        audioEnabled: true,
+        keepAwake: false,
+        now: Date.now() - 30_000,
+        id: "interrupted",
+      }),
+    );
+
+    render(<App />);
+
+    expect(
+      screen.getByRole("heading", { name: "Your break is still in progress." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(route[0].station.name)).toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Resume this relay" }),
+    );
+    expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("discards only the interrupted session and keeps saved stations", async () => {
+    const user = userEvent.setup();
+    const preferences = {
+      stations: STATION_PRESETS.slice(0, 3),
+      feeling: "eyes" as const,
+      duration: 7 as const,
+      spaceMode: "any" as const,
+      audioEnabled: false,
+      hasOnboarded: true,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    saveSession(
+      createSession({
+        route: buildRoute(preferences.stations, "eyes", 7, 12),
+        durationMinutes: 7,
+        audioEnabled: false,
+        keepAwake: false,
+        now: Date.now() - 10_000,
+        id: "discard-me",
+      }),
+    );
+
+    render(<App />);
+    await user.click(
+      screen.getByRole("button", { name: "Discard this relay" }),
+    );
+
+    expect(
+      screen.getByRole("heading", {
+        name: "What would feel different for a few minutes?",
+      }),
+    ).toBeInTheDocument();
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+    ).toHaveLength(3);
+  });
+
+  it("treats an elapsed interrupted relay as complete without adding time", () => {
+    const preferences = {
+      stations: STATION_PRESETS.slice(0, 3),
+      feeling: "noise" as const,
+      duration: 5 as const,
+      spaceMode: "any" as const,
+      audioEnabled: true,
+      hasOnboarded: true,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    saveSession(
+      createSession({
+        route: buildRoute(preferences.stations, "noise", 5, 2),
+        durationMinutes: 5,
+        audioEnabled: true,
+        keepAwake: false,
+        now: Date.now() - 6 * 60_000,
+        id: "stale",
+      }),
+    );
+
+    render(<App />);
+
+    expect(
+      screen.getByRole("heading", { name: "You’re back at the boundary." }),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/original 5-minute deadline passed/i)).toBeVisible();
+    expect(screen.getByText(/no time was added/i)).toBeVisible();
+    expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
+    expect(
+      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}").status,
+    ).toBe("complete");
+  });
+
+  it("explains the no-speech and no-wake fallback without blocking launch", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "air",
+        duration: 5,
+        spaceMode: "any",
+        audioEnabled: true,
+        hasOnboarded: true,
+      }),
+    );
+    Object.defineProperty(window, "speechSynthesis", {
+      configurable: true,
+      value: undefined,
+    });
+    Object.defineProperty(window, "SpeechSynthesisUtterance", {
+      configurable: true,
+      value: undefined,
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Begin my break/ }));
+
+    expect(screen.getByText("VISUAL CUES ONLY")).toBeInTheDocument();
+    expect(screen.getByText("SYSTEM FALLBACK")).toBeInTheDocument();
+    expect(
+      screen.getByText(/use your device’s timer as a backup/i),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /Start and step away/ }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("checkbox", { name: "Keep this session awake" }),
+    ).toBeDisabled();
   });
 });
 

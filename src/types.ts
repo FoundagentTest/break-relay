@@ -35,3 +35,24 @@ export interface RouteStep {
   durationSeconds: number;
   kind: "station" | "return" | "extension";
 }
+
+export interface ActiveSession {
+  version: 1;
+  id: string;
+  route: RouteStep[];
+  startedAt: number;
+  stepDeadlineAt: number;
+  deadlineAt: number;
+  currentStepIndex: number;
+  paused: boolean;
+  pausedAt: number | null;
+  status: "active" | "complete";
+  endedEarly: boolean;
+  extensionUsed: boolean;
+  audioEnabled: boolean;
+  keepAwake: boolean;
+  durationMinutes: number;
+  completedAt: number | null;
+  lastAnnouncedStepId: string | null;
+  updatedAt: number;
+}

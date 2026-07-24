@@ -13,16 +13,43 @@ import {
   SPACE_MODES,
   STATION_PRESETS,
 } from "./data";
-import { clearPreferences, loadPreferences, savePreferences } from "./storage";
+import { getRelayCapabilities, speakCue } from "./capabilities";
+import {
+  completeSession,
+  createSession,
+  markCueAnnounced,
+  pauseSession,
+  reconcileSession,
+  remainingMs,
+  replaceWithExtension,
+  resumeSession,
+  shouldAnnounceCue,
+  skipStep,
+} from "./session";
+import {
+  clearPreferences,
+  clearSession,
+  loadPreferences,
+  loadSession,
+  savePreferences,
+  saveSession,
+} from "./storage";
 import type {
+  ActiveSession,
   Feeling,
   Preferences,
-  RouteStep,
   SpaceMode,
   Station,
 } from "./types";
 
-type Screen = "stations" | "tune" | "home" | "session" | "complete";
+type Screen =
+  | "stations"
+  | "tune"
+  | "home"
+  | "readiness"
+  | "recover"
+  | "session"
+  | "complete";
 
 function Icon({
   name,
@@ -487,26 +514,11 @@ function DurationPicker({
 }
 
 function canUseSpeech() {
-  return (
-    typeof window !== "undefined" &&
-    "speechSynthesis" in window &&
-    "SpeechSynthesisUtterance" in window
-  );
+  return getRelayCapabilities().speech;
 }
 
 function speak(text: string, onError?: () => void) {
-  if (!canUseSpeech()) {
-    onError?.();
-    if ("vibrate" in navigator) navigator.vibrate?.([120, 80, 120]);
-    return;
-  }
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.88;
-  utterance.pitch = 0.92;
-  utterance.volume = 0.78;
-  utterance.onerror = onError ?? null;
-  window.speechSynthesis.speak(utterance);
+  speakCue(text, onError);
 }
 
 function AudioChoice({
@@ -636,6 +648,229 @@ function TuneSetup({
         </section>
         <PrivacyNote />
       </div>
+    </main>
+  );
+}
+
+function Readiness({
+  preferences,
+  onBack,
+  onStart,
+}: {
+  preferences: Preferences;
+  onBack: () => void;
+  onStart: (options: { audioEnabled: boolean; keepAwake: boolean }) => void;
+}) {
+  const capabilities = useMemo(getRelayCapabilities, []);
+  const [visualOnly, setVisualOnly] = useState(
+    preferences.audioEnabled && !capabilities.speech,
+  );
+  const [audioReady, setAudioReady] = useState(
+    !preferences.audioEnabled || !capabilities.speech,
+  );
+  const [keepAwake, setKeepAwake] = useState(false);
+  const audioEnabled =
+    preferences.audioEnabled && capabilities.speech && !visualOnly;
+
+  function checkAudio() {
+    speak(
+      "Break Relay is ready. The next cue will name one place and one action.",
+      () => setVisualOnly(true),
+    );
+    setAudioReady(true);
+  }
+
+  return (
+    <main className="readiness-page">
+      <header className="setup-header">
+        <Brand />
+        <button className="text-button" onClick={onBack} type="button">
+          Back
+        </button>
+      </header>
+      <section className="readiness-shell">
+        <div className="readiness-copy">
+          <p className="eyebrow">BEFORE YOU STEP AWAY</p>
+          <h1>Set a boundary this browser can keep.</h1>
+          <p className="lede">
+            Your exact route and deadline stay on this device. If the tab sleeps
+            or reloads, Relay catches up to the one cue that matters now.
+          </p>
+        </div>
+
+        <div className="readiness-grid">
+          <section className="readiness-checks" aria-label="Screen-away readiness">
+            <article className="capability-card">
+              <span className="capability-icon">
+                <Icon name="sound" />
+              </span>
+              <div>
+                <p className="capability-label">
+                  {capabilities.speech ? "SPOKEN CUES AVAILABLE" : "VISUAL CUES ONLY"}
+                </p>
+                <h2>
+                  {capabilities.speech
+                    ? "Let your browser speak once."
+                    : "This browser cannot speak the route."}
+                </h2>
+                <p>
+                  {capabilities.speech
+                    ? "A cue can play while this page remains active. Background and locked-screen delivery still depends on your browser and operating system."
+                    : "Keep the dim cue page visible when possible. Relay will still recover the correct step and deadline when you return."}
+                </p>
+                {preferences.audioEnabled && capabilities.speech && !visualOnly && (
+                  <button
+                    className={`secondary-button audio-check ${
+                      audioReady ? "is-checked" : ""
+                    }`}
+                    onClick={checkAudio}
+                    type="button"
+                  >
+                    <Icon name={audioReady ? "check" : "play"} size={17} />
+                    {audioReady ? "Cue check played" : "Play cue check"}
+                  </button>
+                )}
+                {preferences.audioEnabled && capabilities.speech && (
+                  <button
+                    className="inline-button visual-only-button"
+                    onClick={() => {
+                      window.speechSynthesis.cancel();
+                      setVisualOnly((current) => !current);
+                      setAudioReady(true);
+                    }}
+                    type="button"
+                  >
+                    {visualOnly ? "Use spoken cues" : "Use visual cues instead"}
+                  </button>
+                )}
+              </div>
+            </article>
+
+            <article className="capability-card">
+              <span className="capability-icon">
+                <Icon name="spark" />
+              </span>
+              <div>
+                <p className="capability-label">
+                  {capabilities.wakeLock ? "SCREEN WAKE AVAILABLE" : "SYSTEM FALLBACK"}
+                </p>
+                <h2>
+                  {capabilities.wakeLock
+                    ? "Keep the dim relay surface awake."
+                    : "Your screen may sleep normally."}
+                </h2>
+                <p>
+                  {capabilities.wakeLock
+                    ? "Optional. This asks the device to keep the display awake only while Relay is visible and running. It releases on pause or finish."
+                    : "Relay cannot prevent sleep here. If you need a cue through a locked screen, use your device’s timer as a backup."}
+                </p>
+                <label className="wake-choice">
+                  <input
+                    checked={keepAwake && capabilities.wakeLock}
+                    disabled={!capabilities.wakeLock}
+                    onChange={(event) => setKeepAwake(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span aria-hidden="true" />
+                  <span>Keep this session awake</span>
+                </label>
+              </div>
+            </article>
+          </section>
+
+          <aside className="boundary-card">
+            <p className="eyebrow">HONEST BOUNDARY</p>
+            <strong>{preferences.duration}</strong>
+            <span>minutes, measured by the clock</span>
+            <p>
+              No notifications are required. Locking the device or moving the
+              browser fully into the background can silence web audio; your
+              route itself will not restart or gain time.
+            </p>
+            <button
+              className="primary-button primary-button--coral primary-button--wide"
+              disabled={audioEnabled && !audioReady}
+              onClick={() => onStart({ audioEnabled, keepAwake })}
+              type="button"
+            >
+              Start and step away
+              <Icon name="arrow" />
+            </button>
+            {audioEnabled && !audioReady && (
+              <small>Play the cue check once, or choose visual cues.</small>
+            )}
+          </aside>
+        </div>
+        <PrivacyNote />
+      </section>
+    </main>
+  );
+}
+
+function Recovery({
+  session,
+  onResume,
+  onDiscard,
+}: {
+  session: ActiveSession;
+  onResume: () => void;
+  onDiscard: () => void;
+}) {
+  const minutes = Math.max(1, Math.ceil(remainingMs(session) / 60_000));
+  const step = session.route[session.currentStepIndex];
+  return (
+    <main className="recovery-page">
+      <header className="setup-header">
+        <Brand />
+      </header>
+      <section className="recovery-shell">
+        <p className="eyebrow">RELAY FOUND ON THIS DEVICE</p>
+        <h1>Your break is still in progress.</h1>
+        <p className="recovery-lede">
+          Relay kept the original route and clock. It will not start another
+          break or replay the cues you missed.
+        </p>
+        <div className="recovery-card">
+          <div>
+            <span>{session.paused ? "PAUSED" : "CURRENT CUE"}</span>
+            <strong>{step.station.name}</strong>
+            <p>{step.action}</p>
+          </div>
+          <dl>
+            <div>
+              <dt>Boundary</dt>
+              <dd>
+                {session.paused
+                  ? `${minutes} min held while paused`
+                  : `About ${minutes} min remain`}
+              </dd>
+            </div>
+            <div>
+              <dt>Route</dt>
+              <dd>
+                Step {session.currentStepIndex + 1} of {session.route.length}
+              </dd>
+            </div>
+          </dl>
+          <div className="recovery-actions">
+            <button
+              className="primary-button primary-button--coral"
+              onClick={onResume}
+              type="button"
+            >
+              <Icon name="play" size={17} />
+              {session.paused ? "Open paused relay" : "Resume this relay"}
+            </button>
+            <button className="discard-button" onClick={onDiscard} type="button">
+              Discard this relay
+            </button>
+          </div>
+        </div>
+        <p className="recovery-note">
+          Discarding removes only this active relay. Your saved stations stay in
+          this browser.
+        </p>
+      </section>
     </main>
   );
 }
@@ -889,105 +1124,237 @@ function formatBoundary(seconds: number) {
   return `About ${Math.ceil(seconds / 60)} min remain`;
 }
 
+type WakeLockStatus = "idle" | "requesting" | "held" | "released" | "failed";
+
+interface WakeLockSentinelLike {
+  release: () => Promise<void>;
+  addEventListener: (type: "release", listener: () => void) => void;
+}
+
+function useWakeLock(enabled: boolean) {
+  const [status, setStatus] = useState<WakeLockStatus>("idle");
+
+  useEffect(() => {
+    const wakeNavigator = navigator as Navigator & {
+      wakeLock?: {
+        request: (type: "screen") => Promise<WakeLockSentinelLike>;
+      };
+    };
+    let sentinel: WakeLockSentinelLike | null = null;
+    let disposed = false;
+
+    async function release() {
+      const held = sentinel;
+      sentinel = null;
+      if (held) {
+        try {
+          await held.release();
+        } catch {
+          // A browser may already have released it on visibility change.
+        }
+      }
+    }
+
+    async function request() {
+      if (
+        !enabled ||
+        !wakeNavigator.wakeLock ||
+        document.visibilityState !== "visible" ||
+        sentinel
+      ) {
+        return;
+      }
+      setStatus("requesting");
+      try {
+        const next = await wakeNavigator.wakeLock.request("screen");
+        if (disposed || !enabled) {
+          await next.release();
+          return;
+        }
+        sentinel = next;
+        setStatus("held");
+        next.addEventListener("release", () => {
+          sentinel = null;
+          if (!disposed) setStatus("released");
+        });
+      } catch {
+        if (!disposed) setStatus("failed");
+      }
+    }
+
+    function handleVisibility() {
+      if (document.visibilityState === "visible") void request();
+    }
+
+    if (!enabled) {
+      setStatus("idle");
+    } else if (!wakeNavigator.wakeLock) {
+      setStatus("failed");
+    } else {
+      void request();
+      document.addEventListener("visibilitychange", handleVisibility);
+    }
+
+    return () => {
+      disposed = true;
+      document.removeEventListener("visibilitychange", handleVisibility);
+      void release();
+    };
+  }, [enabled]);
+
+  return status;
+}
+
 function RelaySession({
-  route,
-  audioEnabled,
+  session,
+  onChange,
   onFinish,
 }: {
-  route: RouteStep[];
-  audioEnabled: boolean;
-  onFinish: (endedEarly: boolean) => void;
+  session: ActiveSession;
+  onChange: (session: ActiveSession) => void;
+  onFinish: (session: ActiveSession) => void;
 }) {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [secondsInStep, setSecondsInStep] = useState(route[0].durationSeconds);
-  const [paused, setPaused] = useState(false);
-  const [speechFailed, setSpeechFailed] = useState(audioEnabled && !canUseSpeech());
+  const [clock, setClock] = useState(Date.now());
+  const [speechFailed, setSpeechFailed] = useState(
+    session.audioEnabled && !canUseSpeech(),
+  );
+  const sessionRef = useRef(session);
   const finishing = useRef(false);
-  const step = route[currentIndex];
+  sessionRef.current = session;
+  const step = session.route[session.currentStepIndex];
+  const wakeStatus = useWakeLock(
+    session.keepAwake && !session.paused && session.status === "active",
+  );
 
-  const announceStep = useCallback(() => {
-    if (audioEnabled) {
-      speak(step.spokenCue, () => setSpeechFailed(true));
-    } else if ("vibrate" in navigator) {
-      navigator.vibrate?.([120, 80, 120]);
-    }
-  }, [audioEnabled, step.spokenCue]);
+  const commit = useCallback(
+    (next: ActiveSession) => {
+      sessionRef.current = next;
+      onChange(next);
+    },
+    [onChange],
+  );
+
+  const announce = useCallback(
+    (next: ActiveSession, force = false) => {
+      if (!force && !shouldAnnounceCue(next)) {
+        commit(next);
+        return;
+      }
+      const cue = next.route[next.currentStepIndex]?.spokenCue;
+      if (!cue) return;
+      if (next.audioEnabled) {
+        speak(cue, () => setSpeechFailed(true));
+      } else {
+        navigator.vibrate?.([120, 80, 120]);
+      }
+      const marked = markCueAnnounced(
+        force ? { ...next, lastAnnouncedStepId: null } : next,
+      );
+      commit(marked);
+    },
+    [commit],
+  );
+
+  const finish = useCallback(
+    (next: ActiveSession) => {
+      if (finishing.current) return;
+      finishing.current = true;
+      let finished = next;
+      if (next.lastAnnouncedStepId !== "__complete__") {
+        if (next.audioEnabled) {
+          speak(
+            next.endedEarly
+              ? "Your relay has ended. Return when you are ready."
+              : "You are back at the boundary. Return when you are ready.",
+            () => setSpeechFailed(true),
+          );
+        } else {
+          navigator.vibrate?.([140, 90, 140]);
+        }
+        finished = {
+          ...next,
+          lastAnnouncedStepId: "__complete__",
+          updatedAt: Date.now(),
+        };
+      }
+      sessionRef.current = finished;
+      onFinish(finished);
+    },
+    [onFinish],
+  );
 
   useEffect(() => {
     document.title = `${step.station.name} · Break Relay`;
-    announceStep();
-    return () => window.speechSynthesis?.cancel?.();
-  }, [announceStep, step.station.name]);
+  }, [step.station.name]);
 
   useEffect(() => {
-    if (paused) return;
-    const timer = window.setInterval(() => {
-      setSecondsInStep((seconds) => {
-        if (seconds > 1) return seconds - 1;
-        if (currentIndex < route.length - 1) {
-          const nextIndex = currentIndex + 1;
-          setCurrentIndex(nextIndex);
-          return route[nextIndex].durationSeconds;
-        }
-        if (!finishing.current) {
-          finishing.current = true;
-          onFinish(false);
-        }
-        return 0;
-      });
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [currentIndex, onFinish, paused, route]);
+    function tick() {
+      const now = Date.now();
+      const current = sessionRef.current;
+      const next = reconcileSession(current, now);
+      setClock(now);
+      if (next.status === "complete") {
+        finish(next);
+      } else if (next.currentStepIndex !== current.currentStepIndex) {
+        announce(next);
+      }
+    }
 
-  const totalRemaining =
-    secondsInStep +
-    route
-      .slice(currentIndex + 1)
-      .reduce((total, item) => total + item.durationSeconds, 0);
+    const timer = window.setInterval(tick, 1000);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("focus", tick);
+    window.addEventListener("pageshow", tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("focus", tick);
+      window.removeEventListener("pageshow", tick);
+      window.speechSynthesis?.cancel?.();
+    };
+  }, [announce, finish]);
+
+  const totalRemaining = Math.ceil(remainingMs(session, clock) / 1000);
 
   function togglePause() {
-    setPaused((current) => {
-      if (canUseSpeech()) {
-        if (current) window.speechSynthesis.resume();
-        else window.speechSynthesis.pause();
-      }
-      return !current;
-    });
+    const current = sessionRef.current;
+    if (current.paused) {
+      const resumed = resumeSession(current);
+      announce(resumed, true);
+    } else {
+      window.speechSynthesis?.cancel?.();
+      commit(pauseSession(current));
+    }
   }
 
   function skip() {
     window.speechSynthesis?.cancel?.();
-    if (currentIndex >= route.length - 1) {
-      if (!finishing.current) {
-        finishing.current = true;
-        onFinish(false);
-      }
-      return;
-    }
-    const nextIndex = currentIndex + 1;
-    setCurrentIndex(nextIndex);
-    setSecondsInStep(route[nextIndex].durationSeconds);
+    const next = skipStep(sessionRef.current);
+    if (next.status === "complete") finish(next);
+    else announce(next);
   }
 
   function endEarly() {
     window.speechSynthesis?.cancel?.();
-    if (!finishing.current) {
-      finishing.current = true;
-      onFinish(true);
-    }
+    finish(completeSession(sessionRef.current, true));
   }
 
   return (
-    <main className={`session-page ${paused ? "is-paused" : ""}`}>
+    <main
+      className={`session-page ${session.paused ? "is-paused" : ""} ${
+        session.keepAwake ? "is-dim-awake" : ""
+      }`}
+    >
       <header className="session-header">
         <Brand quiet />
         <div className="session-boundary" aria-live="polite">
           <span>
             {step.kind === "extension"
               ? "QUIET EXTENSION"
-              : `STOP ${currentIndex + 1} OF ${route.length}`}
+              : `STOP ${session.currentStepIndex + 1} OF ${session.route.length}`}
           </span>
-          <strong>{paused ? "Relay paused" : formatBoundary(totalRemaining)}</strong>
+          <strong>
+            {session.paused ? "Relay paused" : formatBoundary(totalRemaining)}
+          </strong>
         </div>
         <button className="end-button" onClick={endEarly} type="button">
           End early
@@ -996,14 +1363,14 @@ function RelaySession({
 
       <section className="session-shell">
         <div className="session-track" aria-hidden="true">
-          {route.map((item, index) => (
+          {session.route.map((item, index) => (
             <span
-              className={`${index < currentIndex ? "is-done" : ""} ${
-                index === currentIndex ? "is-current" : ""
+              className={`${index < session.currentStepIndex ? "is-done" : ""} ${
+                index === session.currentStepIndex ? "is-current" : ""
               }`}
               key={item.id}
             >
-              {index < currentIndex && <Icon name="check" size={13} />}
+              {index < session.currentStepIndex && <Icon name="check" size={13} />}
             </span>
           ))}
         </div>
@@ -1011,12 +1378,16 @@ function RelaySession({
         <article className="cue-card" aria-live="assertive">
           <div className="cue-kicker">
             <span className="cue-pulse" aria-hidden="true" />
-            {paused ? "PAUSED HERE" : step.kind === "return" ? "RETURN CUE" : "GO TO"}
+            {session.paused
+              ? "PAUSED HERE"
+              : step.kind === "return"
+                ? "RETURN CUE"
+                : "GO TO"}
           </div>
           <h1>{step.station.name}</h1>
           <div className="cue-divider" />
           <p>{step.action}</p>
-          {paused && (
+          {session.paused && (
             <div className="paused-note">Take your time. The relay will wait.</div>
           )}
         </article>
@@ -1035,11 +1406,15 @@ function RelaySession({
         <div className="session-controls" aria-label="Relay controls">
           <button className="control-button control-button--primary" onClick={togglePause} type="button">
             <span>
-              <Icon name={paused ? "play" : "pause"} size={21} />
+              <Icon name={session.paused ? "play" : "pause"} size={21} />
             </span>
-            {paused ? "Resume" : "Pause"}
+            {session.paused ? "Resume" : "Pause"}
           </button>
-          <button className="control-button" onClick={announceStep} type="button">
+          <button
+            className="control-button"
+            onClick={() => announce(sessionRef.current, true)}
+            type="button"
+          >
             <span>
               <Icon name="repeat" size={20} />
             </span>
@@ -1052,8 +1427,18 @@ function RelaySession({
             Skip stop
           </button>
         </div>
+        {session.keepAwake && (
+          <p className={`wake-status wake-status--${wakeStatus}`} role="status">
+            {wakeStatus === "held"
+              ? "Dim screen is being kept awake while this page is visible."
+              : wakeStatus === "failed"
+                ? "This device declined the wake request; the route clock still continues."
+                : "Preparing the dim wake surface…"}
+          </p>
+        )}
         <p className="session-footnote">
-          Nothing to tap at the station. The next cue will come on its own.
+          Nothing to tap at the station. If the browser sleeps, Relay catches up
+          when it returns.
         </p>
       </section>
     </main>
@@ -1061,31 +1446,21 @@ function RelaySession({
 }
 
 function Completion({
-  duration,
-  endedEarly,
-  extensionUsed,
-  audioEnabled,
+  session,
+  interrupted,
   onReady,
   onExtend,
   onFinish,
 }: {
-  duration: number;
-  endedEarly: boolean;
-  extensionUsed: boolean;
-  audioEnabled: boolean;
+  session: ActiveSession;
+  interrupted: boolean;
   onReady: () => void;
   onExtend: () => void;
   onFinish: () => void;
 }) {
   useEffect(() => {
     document.title = "Return when ready · Break Relay";
-    const cue = endedEarly
-      ? "Your relay has ended. Return when you are ready."
-      : "You are back at the boundary. Return when you are ready.";
-    if (audioEnabled) speak(cue);
-    else if ("vibrate" in navigator) navigator.vibrate?.([140, 90, 140]);
-    return () => window.speechSynthesis?.cancel?.();
-  }, [audioEnabled, endedEarly]);
+  }, []);
 
   return (
     <main className="completion-page">
@@ -1100,12 +1475,24 @@ function Completion({
             <Icon name="check" size={38} />
           </div>
         </div>
-        <p className="eyebrow">{endedEarly ? "RELAY ENDED" : "RETURN CUE"}</p>
-        <h1>{endedEarly ? "Meet the day from here." : "You’re back at the boundary."}</h1>
+        <p className="eyebrow">
+          {session.endedEarly
+            ? "RELAY ENDED"
+            : interrupted
+              ? "BOUNDARY RECONCILED"
+              : "RETURN CUE"}
+        </p>
+        <h1>
+          {session.endedEarly
+            ? "Meet the day from here."
+            : "You’re back at the boundary."}
+        </h1>
         <p className="completion-copy">
-          {endedEarly
+          {session.endedEarly
             ? "Stopping early is a complete choice. Come back to the desk when it suits you."
-            : `Your ${duration}-minute route is complete. No score, streak, or verdict—just choose what comes next.`}
+            : interrupted
+              ? `The original ${session.durationMinutes}-minute deadline passed while Relay was away. It is complete—no time was added.`
+              : `Your ${session.durationMinutes}-minute route is complete. No score, streak, or verdict—just choose what comes next.`}
         </p>
 
         <div className="return-choices">
@@ -1118,7 +1505,7 @@ function Completion({
               <small>Close the relay and continue</small>
             </span>
           </button>
-          {!extensionUsed && !endedEarly && (
+          {!session.extensionUsed && !session.endedEarly && (
             <button className="return-secondary" onClick={onExtend} type="button">
               <span className="plus-two">+2</span>
               <span>
@@ -1141,16 +1528,27 @@ function Completion({
 
 export default function App() {
   const initial = useMemo(loadPreferences, []);
+  const recovered = useMemo(loadSession, []);
   const [preferences, setPreferences] = useState<Preferences>(initial);
   const [draft, setDraft] = useState<Preferences>(initial);
   const [screen, setScreen] = useState<Screen>(
-    initial.hasOnboarded && initial.stations.length >= 3 ? "home" : "stations",
+    recovered
+      ? recovered.status === "complete"
+        ? "complete"
+        : "recover"
+      : initial.hasOnboarded && initial.stations.length >= 3
+        ? "home"
+        : "stations",
   );
   const [editing, setEditing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [route, setRoute] = useState<RouteStep[]>([]);
-  const [endedEarly, setEndedEarly] = useState(false);
-  const [extensionUsed, setExtensionUsed] = useState(false);
+  const [session, setSession] = useState<ActiveSession | null>(recovered);
+  const [interruptedCompletion, setInterruptedCompletion] = useState(
+    recovered?.status === "complete",
+  );
+  const [readinessReturn, setReadinessReturn] = useState<"home" | "tune">(
+    "home",
+  );
 
   useEffect(() => {
     if (preferences.hasOnboarded) savePreferences(preferences);
@@ -1167,25 +1565,61 @@ export default function App() {
     savePreferences(next);
   }, []);
 
-  function startRelay(source: Preferences = preferences) {
-    const next = { ...source, hasOnboarded: true };
-    updatePreferences(next);
-    setDraft(next);
-    setRoute(buildRoute(next.stations, next.feeling, next.duration));
-    setEndedEarly(false);
-    setExtensionUsed(false);
+  const commitSession = useCallback((next: ActiveSession) => {
+    setSession(next);
+    saveSession(next);
+  }, []);
+
+  function openReadiness(source: Preferences, returnTo: "home" | "tune") {
+    setDraft(source);
+    setReadinessReturn(returnTo);
+    setScreen("readiness");
+  }
+
+  function startRelay(options: {
+    audioEnabled: boolean;
+    keepAwake: boolean;
+  }) {
+    const nextPreferences = {
+      ...draft,
+      audioEnabled: options.audioEnabled,
+      hasOnboarded: true,
+    };
+    updatePreferences(nextPreferences);
+    setDraft(nextPreferences);
+    const route = buildRoute(
+      nextPreferences.stations,
+      nextPreferences.feeling,
+      nextPreferences.duration,
+    );
+    let nextSession = createSession({
+      route,
+      durationMinutes: nextPreferences.duration,
+      audioEnabled: options.audioEnabled,
+      keepAwake: options.keepAwake,
+    });
+    if (options.audioEnabled) {
+      speak(route[0].spokenCue);
+    } else {
+      navigator.vibrate?.([120, 80, 120]);
+    }
+    nextSession = markCueAnnounced(nextSession);
+    commitSession(nextSession);
+    setInterruptedCompletion(false);
     setScreen("session");
   }
 
-  function finishSession(wasEarly: boolean) {
-    setEndedEarly(wasEarly);
+  const finishSession = useCallback((finished: ActiveSession) => {
+    commitSession(finished);
+    setInterruptedCompletion(false);
     setScreen("complete");
-  }
+  }, [commitSession]);
 
   function returnHome() {
+    clearSession();
+    setSession(null);
     setScreen("home");
-    setEndedEarly(false);
-    setExtensionUsed(false);
+    setInterruptedCompletion(false);
   }
 
   if (screen === "stations") {
@@ -1222,37 +1656,87 @@ export default function App() {
         onDraftChange={setDraft}
         onStart={() => {
           setEditing(false);
-          startRelay(draft);
+          openReadiness(draft, "tune");
         }}
       />
     );
   }
 
-  if (screen === "session" && route.length > 0) {
+  if (screen === "readiness") {
     return (
-      <RelaySession
-        audioEnabled={preferences.audioEnabled}
-        key={route.map((step) => step.id).join("-")}
-        onFinish={finishSession}
-        route={route}
+      <Readiness
+        onBack={() => setScreen(readinessReturn)}
+        onStart={startRelay}
+        preferences={draft}
       />
     );
   }
 
-  if (screen === "complete") {
+  if (screen === "recover" && session?.status === "active") {
+    return (
+      <Recovery
+        onDiscard={() => {
+          window.speechSynthesis?.cancel?.();
+          clearSession();
+          setSession(null);
+          setScreen("home");
+        }}
+        onResume={() => {
+          let current = reconcileSession(session);
+          if (current.status === "complete") {
+            commitSession(current);
+            setInterruptedCompletion(true);
+            setScreen("complete");
+            return;
+          }
+          if (!current.paused) {
+            const cue = current.route[current.currentStepIndex].spokenCue;
+            if (current.audioEnabled) speak(cue);
+            else navigator.vibrate?.([120, 80, 120]);
+            current = markCueAnnounced({
+              ...current,
+              lastAnnouncedStepId: null,
+            });
+          }
+          commitSession(current);
+          setScreen("session");
+        }}
+        session={session}
+      />
+    );
+  }
+
+  if (screen === "session" && session?.status === "active") {
+    return (
+      <RelaySession
+        key={session.id}
+        onChange={commitSession}
+        onFinish={finishSession}
+        session={session}
+      />
+    );
+  }
+
+  if (screen === "complete" && session) {
     return (
       <Completion
-        audioEnabled={preferences.audioEnabled}
-        duration={preferences.duration}
-        endedEarly={endedEarly}
-        extensionUsed={extensionUsed}
+        interrupted={interruptedCompletion}
         onExtend={() => {
-          setExtensionUsed(true);
-          setRoute([buildExtension(preferences.feeling)]);
+          let extension = replaceWithExtension(
+            session,
+            [buildExtension(preferences.feeling)],
+          );
+          const cue = extension.route[0].spokenCue;
+          if (extension.audioEnabled) speak(cue);
+          else navigator.vibrate?.([120, 80, 120]);
+          extension = markCueAnnounced(extension);
+          commitSession(extension);
+          setInterruptedCompletion(false);
           setScreen("session");
         }}
         onFinish={returnHome}
         onReady={returnHome}
+        session={session}
       />
     );
   }
@@ -1262,7 +1746,7 @@ export default function App() {
       <Home
         onChange={updatePreferences}
         onSettings={() => setSettingsOpen(true)}
-        onStart={() => startRelay()}
+        onStart={() => openReadiness(preferences, "home")}
         preferences={preferences}
       />
       {settingsOpen && (
@@ -1279,8 +1763,10 @@ export default function App() {
           }}
           onReset={() => {
             clearPreferences();
+            clearSession();
             setPreferences(DEFAULT_PREFERENCES);
             setDraft(DEFAULT_PREFERENCES);
+            setSession(null);
             setSettingsOpen(false);
             setEditing(false);
             setScreen("stations");

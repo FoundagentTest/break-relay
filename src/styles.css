@@ -2008,6 +2008,392 @@ a:focus-visible {
   font-size: 0.61rem;
 }
 
+/* Screen-away readiness and recovery */
+
+.readiness-page,
+.recovery-page {
+  min-height: 100vh;
+}
+
+.readiness-shell {
+  width: min(1180px, calc(100% - 64px));
+  padding: 58px 0 42px;
+  margin: 0 auto;
+}
+
+.readiness-copy {
+  max-width: 900px;
+  margin-bottom: 44px;
+}
+
+.readiness-copy h1 {
+  font-size: clamp(3.4rem, 6vw, 6.3rem);
+}
+
+.readiness-grid {
+  display: grid;
+  align-items: start;
+  gap: 34px;
+  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.42fr);
+}
+
+.readiness-checks {
+  display: grid;
+  gap: 14px;
+}
+
+.capability-card {
+  display: grid;
+  align-items: start;
+  gap: 18px;
+  padding: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 253, 248, 0.72);
+  grid-template-columns: 48px 1fr;
+}
+
+.capability-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--mint);
+  place-items: center;
+}
+
+.capability-label {
+  margin-bottom: 8px;
+  color: var(--coral-dark);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+}
+
+.capability-card h2 {
+  margin-bottom: 8px;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 1.7rem;
+  font-weight: 400;
+}
+
+.capability-card div > p:last-of-type {
+  max-width: 610px;
+  margin-bottom: 16px;
+  color: var(--ink-soft);
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.audio-check {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  gap: 8px;
+  padding-inline: 16px;
+}
+
+.audio-check.is-checked {
+  border-color: #568267;
+  background: rgba(200, 222, 208, 0.45);
+}
+
+.visual-only-button {
+  margin-left: 16px;
+}
+
+.wake-choice {
+  display: inline-flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.wake-choice input {
+  position: absolute;
+  opacity: 0;
+}
+
+.wake-choice > span[aria-hidden] {
+  position: relative;
+  width: 42px;
+  height: 25px;
+  border: 1px solid var(--line-strong);
+  border-radius: 99px;
+  background: #c8ccc6;
+}
+
+.wake-choice > span[aria-hidden]::after {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--white);
+  content: "";
+  transition: transform 180ms ease;
+}
+
+.wake-choice input:checked + span {
+  border-color: var(--ink);
+  background: var(--ink);
+}
+
+.wake-choice input:checked + span::after {
+  transform: translateX(17px);
+}
+
+.wake-choice input:disabled + span {
+  opacity: 0.4;
+}
+
+.boundary-card {
+  position: sticky;
+  top: 24px;
+  padding: 34px;
+  border-radius: var(--radius-lg);
+  background: var(--ink);
+  color: var(--white);
+  box-shadow: var(--shadow);
+}
+
+.boundary-card .eyebrow {
+  color: var(--lime);
+}
+
+.boundary-card > strong,
+.boundary-card > span {
+  display: block;
+}
+
+.boundary-card > strong {
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 7rem;
+  font-weight: 400;
+  letter-spacing: -0.08em;
+  line-height: 0.8;
+}
+
+.boundary-card > span {
+  margin: 12px 0 24px;
+  color: rgba(255, 255, 255, 0.65);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.boundary-card > p:not(.eyebrow) {
+  padding-top: 20px;
+  margin-bottom: 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 0.69rem;
+  line-height: 1.6;
+}
+
+.boundary-card > small {
+  display: block;
+  margin-top: 10px;
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 0.62rem;
+  text-align: center;
+}
+
+.readiness-shell > .privacy-note {
+  justify-content: center;
+  padding-top: 36px;
+}
+
+.recovery-shell {
+  width: min(760px, calc(100% - 40px));
+  padding: 70px 0 50px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.recovery-shell h1 {
+  font-size: clamp(3.5rem, 8vw, 6.4rem);
+}
+
+.recovery-lede {
+  max-width: 600px;
+  margin: 0 auto 34px;
+  color: var(--ink-soft);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.recovery-card {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--white);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.recovery-card > div:first-child {
+  padding: 34px;
+  background: var(--ink);
+  color: var(--white);
+}
+
+.recovery-card > div:first-child > span {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--lime);
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.recovery-card > div:first-child > strong {
+  display: block;
+  margin-bottom: 10px;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 2.5rem;
+  font-weight: 400;
+}
+
+.recovery-card > div:first-child > p {
+  max-width: 610px;
+  margin: 0;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
+.recovery-card dl {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  border-bottom: 1px solid var(--line);
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.recovery-card dl > div {
+  padding: 20px 26px;
+  border-right: 1px solid var(--line);
+}
+
+.recovery-card dl > div:last-child {
+  border-right: 0;
+}
+
+.recovery-card dt {
+  margin-bottom: 5px;
+  color: var(--ink-soft);
+  font-size: 0.61rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.recovery-card dd {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.recovery-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 24px 26px;
+}
+
+.discard-button {
+  min-height: 44px;
+  padding: 0 4px;
+  background: transparent;
+  color: #792c20;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+
+.recovery-note {
+  margin: 18px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.66rem;
+}
+
+.session-page.is-dim-awake {
+  background: #0b1d1a;
+}
+
+.session-page.is-dim-awake::before,
+.session-page.is-dim-awake::after {
+  display: none;
+}
+
+.session-page.is-dim-awake .cue-card {
+  background: rgba(255, 255, 255, 0.025);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.session-page.is-dim-awake .cue-pulse {
+  animation: none;
+}
+
+.wake-status {
+  margin: 14px 0 0;
+  color: rgba(220, 231, 164, 0.65);
+  font-size: 0.61rem;
+}
+
+.wake-status--failed {
+  color: rgba(255, 205, 190, 0.72);
+}
+
+.update-toast {
+  position: fixed;
+  z-index: 50;
+  right: 22px;
+  bottom: 22px;
+  display: flex;
+  max-width: min(470px, calc(100% - 32px));
+  align-items: center;
+  gap: 22px;
+  padding: 16px 18px;
+  border: 1px solid rgba(220, 231, 164, 0.3);
+  border-radius: 18px;
+  background: #102e29;
+  color: var(--white);
+  box-shadow: 0 20px 60px rgba(6, 25, 21, 0.3);
+}
+
+.update-toast strong,
+.update-toast span {
+  display: block;
+}
+
+.update-toast strong {
+  margin-bottom: 3px;
+  font-size: 0.76rem;
+}
+
+.update-toast span {
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.62rem;
+  line-height: 1.4;
+}
+
+.update-toast button {
+  min-height: 42px;
+  flex: 0 0 auto;
+  padding: 0 15px;
+  border-radius: 999px;
+  background: var(--lime);
+  color: var(--ink);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
 @keyframes soft-pulse {
   0% {
     box-shadow: 0 0 0 0 rgba(227, 107, 75, 0.35);
@@ -2040,12 +2426,14 @@ a:focus-visible {
 
   .setup-workspace,
   .tune-layout,
-  .home-grid {
+  .home-grid,
+  .readiness-grid {
     grid-template-columns: 1fr;
   }
 
   .route-slip,
-  .launch-card {
+  .launch-card,
+  .boundary-card {
     position: static;
   }
 
@@ -2132,7 +2520,8 @@ a:focus-visible {
 
   .setup-shell,
   .setup-shell--narrow,
-  .home-shell {
+  .home-shell,
+  .readiness-shell {
     width: calc(100% - 32px);
   }
 
@@ -2163,6 +2552,56 @@ a:focus-visible {
   .home-controls {
     padding: 20px;
     border-radius: 22px;
+  }
+
+  .readiness-shell {
+    padding-top: 40px;
+  }
+
+  .readiness-copy {
+    margin-bottom: 30px;
+  }
+
+  .capability-card {
+    padding: 22px;
+    grid-template-columns: 42px 1fr;
+  }
+
+  .capability-icon {
+    width: 42px;
+    height: 42px;
+  }
+
+  .visual-only-button {
+    display: flex;
+    margin: 10px 0 0;
+  }
+
+  .recovery-shell {
+    padding-top: 48px;
+  }
+
+  .recovery-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recovery-actions .primary-button,
+  .discard-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .update-toast {
+    right: 16px;
+    bottom: 16px;
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .update-toast button {
+    width: 100%;
   }
 
   .space-mode-grid,
