@@ -22,6 +22,11 @@ Saved stations and temporary availability are intentionally separate.
 5. gives every replacement cue a revision-suffixed ID so only the new cue is
    announced.
 
+When replacement happens while paused, phase deadlines are anchored to the
+original `pausedAt` value. Resume therefore shifts both the session boundary and
+the recomposed phase schedule by the full paused interval, including time that
+passed before the replacement action.
+
 Each rejection increments `rerouteCount`, and the count cannot exceed the
 session’s eligible-station count. Rejected IDs remain excluded for the session,
 so replacement cannot cycle. Terminal completion clears the eligible and

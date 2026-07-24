@@ -11,9 +11,11 @@ import {
   completeSession,
   createSession,
   markCueAnnounced,
+  pauseSession,
   recomposeSession,
   reconcileSession,
   remainingMs,
+  resumeSession,
   shouldAnnounceCue,
 } from "./session";
 import {
@@ -262,6 +264,68 @@ describe("temporary place availability", () => {
     });
     expect(recovered?.route).toEqual(rerouted.route);
     expect(shouldAnnounceCue(recovered!)).toBe(false);
+  });
+
+  it("keeps the full paused interval when rerouting before resume", () => {
+    const route = buildRoute(stations, "eyes", 5, 27);
+    const started = createSession({
+      route,
+      durationMinutes: 5,
+      audioEnabled: false,
+      keepAwake: false,
+      routeContext: learnableContext(route),
+      eligibleStations: stations,
+      now: 1_000,
+      id: "paused-reroute",
+    });
+    const paused = pauseSession(started, 11_000);
+    const rejected = route[0].station.id;
+    const alternatives = stations.filter(
+      (station) => station.id !== rejected,
+    );
+    const replacement = buildReplacementRoute(
+      alternatives,
+      "eyes",
+      5,
+      remainingMs(paused, 21_000) / 1_000,
+      44,
+      { revision: 1, spaceMode: "any" },
+    ).route;
+    const rerouted = recomposeSession(
+      paused,
+      replacement,
+      rejected,
+      21_000,
+    );
+    const resumed = resumeSession(rerouted, 31_000);
+    const replacementDuration = replacement.reduce(
+      (total, step) => total + step.durationSeconds * 1_000,
+      0,
+    );
+
+    expect(started.deadlineAt).toBe(301_000);
+    expect(rerouted.pausedAt).toBe(11_000);
+    expect(rerouted.stepDeadlineAt).toBe(
+      11_000 + replacement[0].durationSeconds * 1_000,
+    );
+    expect(resumed.deadlineAt).toBe(321_000);
+    expect(resumed.stepDeadlineAt).toBe(
+      31_000 + replacement[0].durationSeconds * 1_000,
+    );
+    expect(resumed.deadlineAt - 31_000).toBe(replacementDuration);
+
+    const returnDuration =
+      replacement.at(-1)!.durationSeconds * 1_000;
+    const atReturn = reconcileSession(
+      resumed,
+      resumed.deadlineAt - returnDuration,
+    );
+    expect(atReturn.route[atReturn.currentStepIndex].phase).toBe(
+      "return",
+    );
+    expect(
+      reconcileSession(resumed, resumed.deadlineAt).status,
+    ).toBe("complete");
   });
 
   it("keeps rejected and unreached phases neutral, learns reached replacements, and clears temporary state", () => {

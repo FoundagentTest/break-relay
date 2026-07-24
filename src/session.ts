@@ -223,8 +223,13 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
   if (pacingSlack > 0 && quietIndex >= currentStepIndex) {
     route[quietIndex].durationSeconds += pacingSlack;
   }
+  const scheduleReference =
+    current.paused && current.pausedAt !== null
+      ? current.pausedAt
+      : now;
   const stepDeadlineAt =
-    now + route[currentStepIndex].durationSeconds * SECOND;
+    scheduleReference +
+    route[currentStepIndex].durationSeconds * SECOND;
   const skippedStepIds =
     isLearnableStep(current.route[current.currentStepIndex])
       ? [
@@ -244,7 +249,6 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
       current.reachedStepIds,
     ),
     stepDeadlineAt,
-    pausedAt: current.paused ? now : null,
     lastAnnouncedStepId: null,
     updatedAt: now,
   };
@@ -291,6 +295,10 @@ export function recomposeSession(
       steps.findIndex((candidate) => candidate.stepId === step.stepId) ===
       index,
   );
+  const scheduleReference =
+    current.paused && current.pausedAt !== null
+      ? current.pausedAt
+      : now;
 
   return {
     ...current,
@@ -300,7 +308,8 @@ export function recomposeSession(
       : null,
     currentStepIndex: 0,
     stepDeadlineAt:
-      now + replacementRoute[0].durationSeconds * SECOND,
+      scheduleReference +
+      replacementRoute[0].durationSeconds * SECOND,
     skippedStepIds: current.skippedStepIds,
     reachedStepIds: reachedAt(
       replacementRoute,
@@ -312,7 +321,6 @@ export function recomposeSession(
     ],
     unavailableStationIds,
     rerouteCount: current.rerouteCount + 1,
-    pausedAt: current.paused ? now : null,
     lastAnnouncedStepId: null,
     updatedAt: now,
   };

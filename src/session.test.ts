@@ -127,6 +127,25 @@ describe("wall-clock relay reconciliation", () => {
     expect(skipped.reachedStepIds).toEqual(["step-0", "step-1"]);
   });
 
+  it("keeps the original pause anchor when a cue is skipped while paused", () => {
+    const started = createSession({
+      route: route(),
+      durationMinutes: 1,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "paused-skip",
+    });
+    const paused = pauseSession(started, 4_000);
+    const skipped = skipStep(paused, 8_000);
+    const resumed = resumeSession(skipped, 18_000);
+
+    expect(skipped.pausedAt).toBe(4_000);
+    expect(skipped.stepDeadlineAt).toBe(14_000);
+    expect(resumed.stepDeadlineAt).toBe(28_000);
+    expect(resumed.deadlineAt).toBe(45_000);
+  });
+
   it("migrates a version-one active relay without losing recovery", () => {
     const current = createSession({
       route: route(),
