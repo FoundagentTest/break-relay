@@ -36,10 +36,48 @@ export interface RouteStep {
   kind: "station" | "return" | "extension";
 }
 
-export interface ActiveSession {
+export type RouteOutcome = "useful" | "not_fit" | "unrated";
+
+export interface RouteMemoryStep {
+  stepId: string;
+  stationId: string;
+  stationName: string;
+  action: string;
+  used: boolean;
+  skipped: boolean;
+}
+
+export interface RouteHistoryEntry {
   version: 1;
   id: string;
+  feeling: Feeling;
+  durationMinutes: number;
+  spaceMode: SpaceMode;
+  steps: RouteMemoryStep[];
+  extensionUsed: boolean;
+  endedEarly: boolean;
+  outcome: RouteOutcome;
+  completedAt: number;
+}
+
+export interface RouteMemory {
+  version: 1;
+  entries: RouteHistoryEntry[];
+}
+
+export interface SessionRouteContext {
+  feeling: Feeling;
+  spaceMode: SpaceMode;
+  steps: Omit<RouteMemoryStep, "used" | "skipped">[];
+}
+
+export interface ActiveSession {
+  version: 2;
+  id: string;
   route: RouteStep[];
+  routeContext: SessionRouteContext | null;
+  skippedStepIds: string[];
+  reachedStepIds: string[];
   startedAt: number;
   stepDeadlineAt: number;
   deadlineAt: number;

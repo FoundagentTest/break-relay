@@ -1,6 +1,7 @@
 import type {
   Feeling,
   Preferences,
+  RouteHistoryEntry,
   RouteStep,
   SpaceMode,
   Station,
@@ -272,10 +273,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   hasOnboarded: false,
 };
 
-function stableChoice<T>(items: T[], seed: number): T {
-  return items[Math.abs(seed) % items.length];
-}
-
 function stationScore(id: string, seed: number) {
   let score = seed | 0;
   for (const character of id) {
@@ -284,15 +281,174 @@ function stationScore(id: string, seed: number) {
   return score >>> 0;
 }
 
+function seededUnit(seed: number, key: string) {
+  return stationScore(key, seed) / 0xffffffff;
+}
+
+function clamp(value: number, minimum: number, maximum: number) {
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function contextSimilarity(
+  entry: RouteHistoryEntry,
+  feeling: Feeling,
+  durationMinutes: number,
+  spaceMode: SpaceMode,
+) {
+  const feelingWeight = entry.feeling === feeling ? 1 : 0.18;
+  const spaceWeight =
+    entry.spaceMode === spaceMode
+      ? 1
+      : entry.spaceMode === "any" || spaceMode === "any"
+        ? 0.72
+        : 0.5;
+  const durationDifference = Math.abs(
+    entry.durationMinutes - durationMinutes,
+  );
+  const durationWeight =
+    durationDifference === 0 ? 1 : durationDifference <= 2 ? 0.78 : 0.56;
+  return feelingWeight * spaceWeight * durationWeight;
+}
+
+function feedbackValue(outcome: RouteHistoryEntry["outcome"]) {
+  if (outcome === "useful") return 1;
+  if (outcome === "not_fit") return -0.68;
+  return 0;
+}
+
+function preferenceForStation(
+  stationId: string,
+  history: RouteHistoryEntry[],
+  feeling: Feeling,
+  durationMinutes: number,
+  spaceMode: SpaceMode,
+) {
+  const score = history.reduce((total, entry, index) => {
+    const step = entry.steps.find(
+      (item) => item.stationId === stationId && item.used && !item.skipped,
+    );
+    if (!step) return total;
+    return (
+      total +
+      feedbackValue(entry.outcome) *
+        contextSimilarity(entry, feeling, durationMinutes, spaceMode) *
+        (1 / (1 + index * 0.22))
+    );
+  }, 0);
+  return clamp(score, -2.2, 3);
+}
+
+function preferenceForAction(
+  stationId: string,
+  action: string,
+  history: RouteHistoryEntry[],
+  feeling: Feeling,
+  durationMinutes: number,
+  spaceMode: SpaceMode,
+) {
+  const score = history.reduce((total, entry, index) => {
+    const step = entry.steps.find(
+      (item) =>
+        item.stationId === stationId &&
+        item.action === action &&
+        item.used &&
+        !item.skipped,
+    );
+    if (!step) return total;
+    return (
+      total +
+      feedbackValue(entry.outcome) *
+        contextSimilarity(entry, feeling, durationMinutes, spaceMode) *
+        (1 / (1 + index * 0.22))
+    );
+  }, 0);
+  return clamp(score, -2.2, 3);
+}
+
+export interface RouteBuildOptions {
+  history?: RouteHistoryEntry[];
+  spaceMode?: SpaceMode;
+}
+
 export function buildRoute(
   stations: Station[],
   feeling: Feeling,
   durationMinutes: number,
   seed = Date.now(),
+  options: RouteBuildOptions = {},
 ): RouteStep[] {
-  const chosen = [...stations]
-    .sort((a, b) => stationScore(a.id, seed) - stationScore(b.id, seed))
-    .slice(0, Math.min(4, stations.length));
+  const spaceMode = options.spaceMode ?? "any";
+  const history = [...(options.history ?? [])].sort(
+    (a, b) => b.completedAt - a.completedAt,
+  );
+  const eligible = stations.filter((station) =>
+    station.modes.includes(spaceMode),
+  );
+  if (eligible.length === 0) {
+    throw new Error("A relay needs at least one station available in this space.");
+  }
+  const stationCount = Math.min(4, eligible.length);
+  const hasRatedHistory = history.some((entry) => entry.outcome !== "unrated");
+  const exploring =
+    hasRatedHistory && stationScore("deliberate-exploration", seed) % 5 === 0;
+  const recentOrders = history
+    .slice(0, 3)
+    .map((entry) => entry.steps.map((step) => step.stationId));
+  const remaining = [...eligible];
+  const chosen: Station[] = [];
+
+  for (let position = 0; position < stationCount; position += 1) {
+    const ranked = remaining
+      .map((station) => {
+        const preference = exploring
+          ? 0
+          : preferenceForStation(
+              station.id,
+              history,
+              feeling,
+              durationMinutes,
+              spaceMode,
+            );
+        const repeatedPositionPenalty = recentOrders.reduce(
+          (penalty, order, recentIndex) =>
+            penalty +
+            (order[position] === station.id
+              ? 0.58 / (recentIndex + 1)
+              : 0),
+          0,
+        );
+        return {
+          station,
+          score:
+            seededUnit(seed, `station:${position}:${station.id}`) +
+            preference * 0.24 -
+            repeatedPositionPenalty,
+        };
+      })
+      .sort(
+        (a, b) =>
+          b.score - a.score || a.station.id.localeCompare(b.station.id),
+      );
+    const next = ranked[0].station;
+    chosen.push(next);
+    remaining.splice(
+      remaining.findIndex((station) => station.id === next.id),
+      1,
+    );
+  }
+
+  const mostRecentOrder = recentOrders[0]?.slice(0, chosen.length);
+  if (
+    chosen.length > 1 &&
+    mostRecentOrder?.length === chosen.length &&
+    chosen.every((station, index) => station.id === mostRecentOrder[index])
+  ) {
+    const swapIndex = stationScore("order-swap", seed) % (chosen.length - 1);
+    [chosen[swapIndex], chosen[swapIndex + 1]] = [
+      chosen[swapIndex + 1],
+      chosen[swapIndex],
+    ];
+  }
 
   const totalSeconds = durationMinutes * 60;
   const returnSeconds = 40;
@@ -301,7 +457,36 @@ export function buildRoute(
 
   const steps: RouteStep[] = chosen.map((station, index) => {
     const options = ACTIONS[feeling][station.kind] ?? ACTIONS[feeling].custom;
-    const action = stableChoice(options, seed + index * 13 + station.name.length);
+    const immediateAction = history[0]?.steps.find(
+      (item) => item.stationId === station.id,
+    )?.action;
+    const rankedActions = options
+      .map((action) => ({
+        action,
+        score:
+          seededUnit(seed, `action:${index}:${station.id}:${action}`) +
+          (exploring
+            ? 0
+            : preferenceForAction(
+                station.id,
+                action,
+                history,
+                feeling,
+                durationMinutes,
+                spaceMode,
+              ) * 0.3) -
+          (action === immediateAction ? 0.72 : 0),
+      }))
+      .sort(
+        (a, b) => b.score - a.score || a.action.localeCompare(b.action),
+      );
+    const nonRepeatingAction = rankedActions.find(
+      (item) => item.action !== immediateAction,
+    );
+    const action =
+      options.length > 1 && rankedActions[0].action === immediateAction
+        ? (nonRepeatingAction?.action ?? rankedActions[0].action)
+        : rankedActions[0].action;
     return {
       id: `${station.id}-${index}`,
       station,

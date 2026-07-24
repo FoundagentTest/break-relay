@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { buildRoute, STATION_PRESETS } from "./data";
-import { createSession } from "./session";
+import { completeSession, createSession, skipStep } from "./session";
+import { ROUTE_MEMORY_STORAGE_KEY } from "./routeMemory";
 import {
   SESSION_STORAGE_KEY,
   STORAGE_KEY,
@@ -106,7 +107,9 @@ describe("Break Relay", () => {
     expect(
       screen.queryByRole("button", { name: /Add two quiet minutes/ }),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Ready to return/ }));
+    await user.click(
+      screen.getByRole("button", { name: /This route gave me a reset/ }),
+    );
 
     expect(
       screen.getByRole("heading", {
@@ -119,6 +122,17 @@ describe("Break Relay", () => {
     expect(stored.duration).toBe(5);
     expect(stored.hasOnboarded).toBe(true);
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    const routeMemory = JSON.parse(
+      localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY) ?? "{}",
+    );
+    expect(routeMemory.entries).toHaveLength(1);
+    expect(routeMemory.entries[0]).toMatchObject({
+      outcome: "useful",
+      extensionUsed: true,
+      feeling: "eyes",
+      durationMinutes: 5,
+      spaceMode: "any",
+    });
   });
 
   it("lets a returning user edit stations and reset all local data", async () => {
@@ -138,7 +152,7 @@ describe("Break Relay", () => {
 
     await user.click(screen.getByRole("button", { name: "My relay" }));
     const settings = screen.getByRole("dialog", { name: "My relay settings" });
-    expect(within(settings).getByText("Stored only on this device")).toBeVisible();
+    expect(within(settings).getByText("Route learning stays here")).toBeVisible();
 
     await user.click(within(settings).getByRole("button", { name: /Edit/ }));
     await user.click(screen.getByRole("button", { name: /Plant or shelf/ }));
@@ -154,6 +168,10 @@ describe("Break Relay", () => {
     );
 
     await user.click(screen.getByRole("button", { name: "My relay" }));
+    localStorage.setItem(
+      ROUTE_MEMORY_STORAGE_KEY,
+      JSON.stringify({ version: 1, entries: [] }),
+    );
     await user.click(screen.getByRole("button", { name: /Reset local data/ }));
     await user.click(screen.getByRole("button", { name: "Yes, reset" }));
 
@@ -163,6 +181,41 @@ describe("Break Relay", () => {
       }),
     ).toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY)).toBeNull();
+  });
+
+  it("erases route history independently while keeping saved stations", async () => {
+    const user = userEvent.setup();
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "noise",
+        duration: 7,
+        spaceMode: "any",
+        audioEnabled: false,
+        hasOnboarded: true,
+      }),
+    );
+    localStorage.setItem(
+      ROUTE_MEMORY_STORAGE_KEY,
+      JSON.stringify({ version: 1, entries: [] }),
+    );
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "My relay" }));
+    await user.click(
+      screen.getByRole("button", { name: "Erase route history" }),
+    );
+    await user.click(screen.getByRole("button", { name: "Erase history" }));
+
+    expect(localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY)).toBeNull();
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations).toHaveLength(
+      3,
+    );
+    expect(
+      screen.getByText("Route history erased. Your stations are unchanged."),
+    ).toBeVisible();
   });
 
   it("offers an interrupted relay for coherent resume or discard", async () => {
@@ -271,6 +324,119 @@ describe("Break Relay", () => {
     expect(
       JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}").status,
     ).toBe("complete");
+  });
+
+  it("records that a particular completed route did not fit", async () => {
+    const user = userEvent.setup();
+    const preferences = {
+      stations: STATION_PRESETS.slice(0, 3),
+      feeling: "air" as const,
+      duration: 5 as const,
+      spaceMode: "any" as const,
+      audioEnabled: false,
+      hasOnboarded: true,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    const route = buildRoute(preferences.stations, "air", 5, 91);
+    const started = createSession({
+      route,
+      durationMinutes: 5,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "not-fit-route",
+      routeContext: {
+        feeling: "air",
+        spaceMode: "any",
+        steps: route.slice(0, -1).map((step) => ({
+          stepId: step.id,
+          stationId: step.station.id,
+          stationName: step.station.name,
+          action: step.action,
+        })),
+      },
+    });
+    saveSession(completeSession(started, false, 10_000));
+
+    render(<App />);
+    expect(
+      screen.getByRole("button", { name: /This route gave me a reset/ }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /This route didn’t fit/ }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Leave without rating" }),
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /This route didn’t fit/ }),
+    );
+
+    const memory = JSON.parse(
+      localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY) ?? "{}",
+    );
+    expect(memory.entries[0]).toMatchObject({
+      id: "not-fit-route",
+      outcome: "not_fit",
+      endedEarly: false,
+    });
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+  });
+
+  it("keeps an early end and skipped station neutral when leaving unrated", async () => {
+    const user = userEvent.setup();
+    const preferences = {
+      stations: STATION_PRESETS.slice(0, 3),
+      feeling: "stiff" as const,
+      duration: 7 as const,
+      spaceMode: "any" as const,
+      audioEnabled: false,
+      hasOnboarded: true,
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    const route = buildRoute(preferences.stations, "stiff", 7, 31);
+    const started = createSession({
+      route,
+      durationMinutes: 7,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "neutral-early-route",
+      routeContext: {
+        feeling: "stiff",
+        spaceMode: "any",
+        steps: route.slice(0, -1).map((step) => ({
+          stepId: step.id,
+          stationId: step.station.id,
+          stationName: step.station.name,
+          action: step.action,
+        })),
+      },
+    });
+    const skipped = skipStep(started, 2_000);
+    saveSession(completeSession(skipped, true, 3_000));
+
+    render(<App />);
+    expect(screen.getByText(/Stopping early is a complete choice, not a rating/i)).toBeVisible();
+    expect(screen.getByText(/Skipped stops stay neutral/i)).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: /Add two quiet minutes/ }),
+    ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "Leave without rating" }),
+    );
+
+    const memory = JSON.parse(
+      localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY) ?? "{}",
+    );
+    expect(memory.entries[0]).toMatchObject({
+      outcome: "unrated",
+      endedEarly: true,
+    });
+    expect(memory.entries[0].steps[0].skipped).toBe(true);
+    expect(memory.entries[0].steps[0].used).toBe(false);
+    expect(memory.entries[0].steps[1].used).toBe(true);
+    expect(memory.entries[0].steps[2].used).toBe(false);
   });
 
   it("explains the no-speech and no-wake fallback without blocking launch", async () => {

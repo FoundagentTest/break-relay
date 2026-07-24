@@ -1,4 +1,8 @@
-import type { ActiveSession, RouteStep } from "./types";
+import type {
+  ActiveSession,
+  RouteStep,
+  SessionRouteContext,
+} from "./types";
 
 const SECOND = 1000;
 
@@ -17,12 +21,27 @@ function createSessionId(now: number) {
   return `relay-${now}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function reachedThrough(route: RouteStep[], index: number, existing: string[]) {
+  return [
+    ...new Set([
+      ...existing,
+      ...route
+        .slice(0, index + 1)
+        .filter((step) => step.kind === "station")
+        .map((step) => step.id),
+    ]),
+  ];
+}
+
 export function createSession({
   route,
   durationMinutes,
   audioEnabled,
   keepAwake,
   extensionUsed = false,
+  routeContext = null,
+  skippedStepIds = [],
+  reachedStepIds,
   now = Date.now(),
   id,
 }: {
@@ -31,15 +50,23 @@ export function createSession({
   audioEnabled: boolean;
   keepAwake: boolean;
   extensionUsed?: boolean;
+  routeContext?: SessionRouteContext | null;
+  skippedStepIds?: string[];
+  reachedStepIds?: string[];
   now?: number;
   id?: string;
 }): ActiveSession {
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 1,
+    version: 2,
     id: id ?? createSessionId(now),
     route,
+    routeContext,
+    skippedStepIds,
+    reachedStepIds:
+      reachedStepIds ??
+      (route[0].kind === "station" ? [route[0].id] : []),
     startedAt: now,
     stepDeadlineAt: now + firstStepMs,
     deadlineAt: now + routeDurationMs(route),
@@ -76,6 +103,11 @@ export function reconcileSession(
     return {
       ...session,
       currentStepIndex: session.route.length - 1,
+      reachedStepIds: reachedThrough(
+        session.route,
+        session.route.length - 1,
+        session.reachedStepIds,
+      ),
       status: "complete",
       completedAt: session.deadlineAt,
       updatedAt: now,
@@ -102,6 +134,11 @@ export function reconcileSession(
       ...session,
       currentStepIndex,
       stepDeadlineAt,
+      reachedStepIds: reachedThrough(
+        session.route,
+        currentStepIndex,
+        session.reachedStepIds,
+      ),
       status: "complete",
       completedAt: Math.min(stepDeadlineAt, session.deadlineAt),
       updatedAt: now,
@@ -119,6 +156,11 @@ export function reconcileSession(
     ...session,
     currentStepIndex,
     stepDeadlineAt,
+    reachedStepIds: reachedThrough(
+      session.route,
+      currentStepIndex,
+      session.reachedStepIds,
+    ),
     updatedAt: now,
   };
 }
@@ -166,10 +208,23 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
   const futureDuration = current.route
     .slice(currentStepIndex + 1)
     .reduce((total, step) => total + step.durationSeconds * SECOND, 0);
+  const skippedStepIds =
+    current.route[current.currentStepIndex].kind === "station"
+      ? [
+          ...current.skippedStepIds,
+          current.route[current.currentStepIndex].id,
+        ]
+      : current.skippedStepIds;
 
   return {
     ...current,
     currentStepIndex,
+    skippedStepIds,
+    reachedStepIds: reachedThrough(
+      current.route,
+      currentStepIndex,
+      current.reachedStepIds,
+    ),
     stepDeadlineAt,
     deadlineAt: stepDeadlineAt + futureDuration,
     pausedAt: current.paused ? now : null,
@@ -226,6 +281,9 @@ export function replaceWithExtension(
       audioEnabled: session.audioEnabled,
       keepAwake: session.keepAwake,
       extensionUsed: true,
+      routeContext: session.routeContext,
+      skippedStepIds: session.skippedStepIds,
+      reachedStepIds: session.reachedStepIds,
       now,
       id: session.id,
     }),

@@ -34,10 +34,18 @@ import {
   savePreferences,
   saveSession,
 } from "./storage";
+import {
+  appendRouteHistory,
+  clearRouteMemory,
+  createRouteHistoryEntry,
+  loadRouteMemory,
+  saveRouteMemory,
+} from "./routeMemory";
 import type {
   ActiveSession,
   Feeling,
   Preferences,
+  RouteOutcome,
   SpaceMode,
   Station,
 } from "./types";
@@ -166,7 +174,7 @@ function PrivacyNote() {
     <div className="privacy-note">
       <span className="privacy-dot" aria-hidden="true" />
       <span>
-        No account. Your stations stay in this browser and are never sent anywhere.
+        No account or analytics. Stations and route learning stay in this browser.
       </span>
     </div>
   );
@@ -983,15 +991,19 @@ function SettingsPanel({
   onClose,
   onEdit,
   onAudioChange,
+  onClearHistory,
   onReset,
 }: {
   preferences: Preferences;
   onClose: () => void;
   onEdit: () => void;
   onAudioChange: (enabled: boolean) => void;
+  onClearHistory: () => void;
   onReset: () => void;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [confirmHistoryReset, setConfirmHistoryReset] = useState(false);
+  const [historyCleared, setHistoryCleared] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -1079,11 +1091,53 @@ function SettingsPanel({
         <section className="local-card">
           <span className="privacy-dot" aria-hidden="true" />
           <div>
-            <h3>Stored only on this device</h3>
+            <h3>Route learning stays here</h3>
             <p>
-              Break Relay has no account or server profile. Your station names and
-              last choices live in this browser’s local storage.
+              When you rate a route, Relay keeps a short history in this browser
+              to vary the next order and favor what fit in similar moments. It is
+              never sent anywhere.
             </p>
+            {!confirmHistoryReset ? (
+              <button
+                className="inline-button history-clear"
+                onClick={() => {
+                  setConfirmHistoryReset(true);
+                  setHistoryCleared(false);
+                }}
+                type="button"
+              >
+                Erase route history
+              </button>
+            ) : (
+              <div className="history-reset-confirm">
+                <p>Erase route learning but keep your saved stations?</p>
+                <div>
+                  <button
+                    className="secondary-button"
+                    onClick={() => {
+                      onClearHistory();
+                      setConfirmHistoryReset(false);
+                      setHistoryCleared(true);
+                    }}
+                    type="button"
+                  >
+                    Erase history
+                  </button>
+                  <button
+                    className="text-button"
+                    onClick={() => setConfirmHistoryReset(false)}
+                    type="button"
+                  >
+                    Keep it
+                  </button>
+                </div>
+              </div>
+            )}
+            {historyCleared && (
+              <p className="history-cleared" role="status">
+                Route history erased. Your stations are unchanged.
+              </p>
+            )}
           </div>
         </section>
 
@@ -1097,7 +1151,8 @@ function SettingsPanel({
             <div className="reset-confirm" role="alert">
               <p>
                 <strong>Start completely over?</strong>
-                This removes every saved station from this browser.
+                This removes saved stations, route history, and any active relay
+                from this browser.
               </p>
               <div>
                 <button className="danger-button" onClick={onReset} type="button">
@@ -1450,15 +1505,13 @@ function RelaySession({
 function Completion({
   session,
   interrupted,
-  onReady,
   onExtend,
-  onFinish,
+  onOutcome,
 }: {
   session: ActiveSession;
   interrupted: boolean;
-  onReady: () => void;
   onExtend: () => void;
-  onFinish: () => void;
+  onOutcome: (outcome: RouteOutcome) => void;
 }) {
   useEffect(() => {
     document.title = "Return when ready · Break Relay";
@@ -1491,20 +1544,37 @@ function Completion({
         </h1>
         <p className="completion-copy">
           {session.endedEarly
-            ? "Stopping early is a complete choice. Come back to the desk when it suits you."
+            ? "Stopping early is a complete choice, not a rating. If you want, say whether the part you used fit."
             : interrupted
               ? `The original ${session.durationMinutes}-minute deadline passed while Relay was away. It is complete—no time was added.`
-              : `Your ${session.durationMinutes}-minute route is complete. No score, streak, or verdict—just choose what comes next.`}
+              : `Your ${session.durationMinutes}-minute route is complete. Say whether this particular route felt useful, or simply leave it unrated.`}
         </p>
 
         <div className="return-choices">
-          <button className="primary-button primary-button--coral return-primary" onClick={onReady} type="button">
+          <button
+            className="primary-button primary-button--coral return-primary"
+            onClick={() => onOutcome("useful")}
+            type="button"
+          >
             <span>
-              <Icon name="arrow" />
+              <Icon name="check" />
             </span>
             <span>
-              <strong>Ready to return</strong>
-              <small>Close the relay and continue</small>
+              <strong>This route gave me a reset</strong>
+              <small>Remember what fit and return</small>
+            </span>
+          </button>
+          <button
+            className="return-secondary return-secondary--not-fit"
+            onClick={() => onOutcome("not_fit")}
+            type="button"
+          >
+            <span className="return-choice-icon">
+              <Icon name="close" size={18} />
+            </span>
+            <span>
+              <strong>This route didn’t fit</strong>
+              <small>Gently vary these choices next time</small>
             </span>
           </button>
           {!session.extensionUsed && !session.endedEarly && (
@@ -1516,12 +1586,18 @@ function Completion({
               </span>
             </button>
           )}
-          <button className="finish-link" onClick={onFinish} type="button">
-            Finish here
+          <button
+            className="finish-link"
+            onClick={() => onOutcome("unrated")}
+            type="button"
+          >
+            Leave without rating
           </button>
         </div>
         <p className="completion-note">
-          Break Relay doesn’t assess how rested you are. You decide what was useful.
+          {session.skippedStepIds.length > 0
+            ? "Skipped stops stay neutral. Relay learns only from what you used and explicitly chose."
+            : "This choice shapes route variety only. It is not a health or productivity assessment."}
         </p>
       </section>
     </main>
@@ -1531,6 +1607,7 @@ function Completion({
 export default function App() {
   const initial = useMemo(loadPreferences, []);
   const recovered = useMemo(loadSession, []);
+  const initialRouteMemory = useMemo(loadRouteMemory, []);
   const [preferences, setPreferences] = useState<Preferences>(initial);
   const [draft, setDraft] = useState<Preferences>(initial);
   const [screen, setScreen] = useState<Screen>(
@@ -1545,6 +1622,7 @@ export default function App() {
   const [editing, setEditing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [session, setSession] = useState<ActiveSession | null>(recovered);
+  const [routeMemory, setRouteMemory] = useState(initialRouteMemory);
   const [interruptedCompletion, setInterruptedCompletion] = useState(
     recovered?.status === "complete",
   );
@@ -1593,12 +1671,29 @@ export default function App() {
       nextPreferences.stations,
       nextPreferences.feeling,
       nextPreferences.duration,
+      Date.now(),
+      {
+        history: routeMemory.entries,
+        spaceMode: nextPreferences.spaceMode,
+      },
     );
     let nextSession = createSession({
       route,
       durationMinutes: nextPreferences.duration,
       audioEnabled: options.audioEnabled,
       keepAwake: options.keepAwake,
+      routeContext: {
+        feeling: nextPreferences.feeling,
+        spaceMode: nextPreferences.spaceMode,
+        steps: route
+          .filter((step) => step.kind === "station")
+          .map((step) => ({
+            stepId: step.id,
+            stationId: step.station.id,
+            stationName: step.station.name,
+            action: step.action,
+          })),
+      },
     });
     if (options.audioEnabled) {
       speak(route[0].spokenCue);
@@ -1622,6 +1717,26 @@ export default function App() {
     setSession(null);
     setScreen("home");
     setInterruptedCompletion(false);
+  }
+
+  function completeWithOutcome(outcome: RouteOutcome) {
+    if (!session) return;
+    const entry = createRouteHistoryEntry(
+      session,
+      {
+        feeling: preferences.feeling,
+        spaceMode: preferences.spaceMode,
+      },
+      outcome,
+    );
+    if (entry) {
+      setRouteMemory((current) => {
+        const next = appendRouteHistory(current, entry);
+        saveRouteMemory(next);
+        return next;
+      });
+    }
+    returnHome();
   }
 
   if (screen === "stations") {
@@ -1736,8 +1851,7 @@ export default function App() {
           setInterruptedCompletion(false);
           setScreen("session");
         }}
-        onFinish={returnHome}
-        onReady={returnHome}
+        onOutcome={completeWithOutcome}
         session={session}
       />
     );
@@ -1757,6 +1871,10 @@ export default function App() {
             updatePreferences({ ...preferences, audioEnabled })
           }
           onClose={() => setSettingsOpen(false)}
+          onClearHistory={() => {
+            clearRouteMemory();
+            setRouteMemory({ version: 1, entries: [] });
+          }}
           onEdit={() => {
             setDraft(preferences);
             setEditing(true);
@@ -1766,8 +1884,10 @@ export default function App() {
           onReset={() => {
             clearPreferences();
             clearSession();
+            clearRouteMemory();
             setPreferences(DEFAULT_PREFERENCES);
             setDraft(DEFAULT_PREFERENCES);
+            setRouteMemory({ version: 1, entries: [] });
             setSession(null);
             setSettingsOpen(false);
             setEditing(false);

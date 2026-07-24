@@ -38,6 +38,7 @@ vercel --prod
 Keep the stable `break-relay.vercel.app` alias on the production deployment and
 leave SSO deployment protection disabled so the product remains public.
 
-Break Relay has no backend, accounts, analytics, or runtime secrets. Preferences
-and an unfinished relay are the only data stored, both in browser
-`localStorage`. Clearing site data resets them.
+Break Relay has no backend, accounts, analytics, or runtime secrets.
+Preferences, an unfinished relay, and a bounded route-learning history are
+stored only in browser `localStorage`. Route history can be erased without
+removing saved stations; resetting local data clears all three.

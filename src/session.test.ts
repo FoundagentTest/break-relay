@@ -9,6 +9,7 @@ import {
   shouldAnnounceCue,
   skipStep,
 } from "./session";
+import { loadSession, SESSION_STORAGE_KEY } from "./storage";
 import type { RouteStep } from "./types";
 
 function route(): RouteStep[] {
@@ -121,5 +122,40 @@ describe("wall-clock relay reconciliation", () => {
     expect(skipped.stepDeadlineAt).toBe(14_000);
     expect(skipped.deadlineAt).toBe(24_000);
     expect(skipped.lastAnnouncedStepId).toBeNull();
+    expect(skipped.skippedStepIds).toEqual(["step-0"]);
+    expect(skipped.reachedStepIds).toEqual(["step-0", "step-1"]);
+  });
+
+  it("migrates a version-one active relay without losing recovery", () => {
+    const current = createSession({
+      route: route(),
+      durationMinutes: 1,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "legacy-active",
+    });
+    const {
+      routeContext: _routeContext,
+      skippedStepIds: _skippedStepIds,
+      reachedStepIds: _reachedStepIds,
+      ...legacy
+    } = current;
+    localStorage.setItem(
+      SESSION_STORAGE_KEY,
+      JSON.stringify({ ...legacy, version: 1 }),
+    );
+
+    const recovered = loadSession(2_000);
+
+    expect(recovered).toMatchObject({
+      version: 2,
+      id: "legacy-active",
+      status: "active",
+      currentStepIndex: 0,
+      routeContext: null,
+      skippedStepIds: [],
+      reachedStepIds: ["step-0"],
+    });
   });
 });
