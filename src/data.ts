@@ -141,7 +141,7 @@ export const STATION_PRESETS: Station[] = [
   },
 ];
 
-const ACTIONS: Record<Feeling, Record<StationKind, string[]>> = {
+const ARRIVAL_ACTIONS: Record<Feeling, Record<StationKind, string[]>> = {
   noise: {
     view: [
       "Let your gaze land on one still thing in the distance. Nothing to solve.",
@@ -264,6 +264,68 @@ const ACTIONS: Record<Feeling, Record<StationKind, string[]>> = {
   },
 };
 
+const QUIET_ACTIONS: Record<
+  Feeling,
+  Record<"view" | "nature" | "rest", [string, string]>
+> = {
+  noise: {
+    view: [
+      "Let your attention rest on one distant, still thing. The quiet does not need a task.",
+      "Keep the screen behind you and take in the whole view without looking for anything.",
+    ],
+    nature: [
+      "Stay with one ordinary texture or edge, then let the rest of the scene be quiet.",
+      "Let this small detail hold your attention loosely. Nothing needs to be worked out.",
+    ],
+    rest: [
+      "Let this position be enough for a while. The next cue will come to you.",
+      "Stay facing away from the work if that remains comfortable. Leave the time unassigned.",
+    ],
+  },
+  eyes: {
+    view: [
+      "Keep your gaze at a comfortable distance, or close your eyes if you prefer.",
+      "Let the view stay wide and easy. There is nothing small to inspect.",
+    ],
+    nature: [
+      "Take in the whole shape rather than its fine detail, with an easy gaze.",
+      "Look beyond this detail when comfortable and let your focus rest farther away.",
+    ],
+    rest: [
+      "Keep your eyes closed or softly focused away from the screen, whichever is easier.",
+      "Let your gaze remain quiet and comfortable until the return cue.",
+    ],
+  },
+  stiff: {
+    view: [
+      "Stay in the easiest position available here. Change it whenever that feels better.",
+      "Let your working posture stay behind you; no position needs to be held.",
+    ],
+    nature: [
+      "Rest here without holding a pose. A small comfortable adjustment is always optional.",
+      "Let supported parts of you stay supported while your attention rests on the scene.",
+    ],
+    rest: [
+      "Settle into the support that is available. Move or adjust whenever you want.",
+      "Keep the position only while it feels comfortable. Let the quiet remain unassigned.",
+    ],
+  },
+  air: {
+    view: [
+      "Stay with the light or sense of space here. Breathe normally and let the scene change on its own.",
+      "Notice one small change in light, weather, or sound, then let the view be quiet.",
+    ],
+    nature: [
+      "Let the color and light here hold your attention without searching for more.",
+      "Stay with this small sign of the world beyond work until the next cue.",
+    ],
+    rest: [
+      "Face the more open direction if that suits you, and notice the air already around you.",
+      "Stay with the change of direction. Nothing needs to be opened or adjusted.",
+    ],
+  },
+};
+
 export const DEFAULT_PREFERENCES: Preferences = {
   stations: [],
   feeling: "noise",
@@ -329,10 +391,10 @@ function preferenceForStation(
   spaceMode: SpaceMode,
 ) {
   const score = history.reduce((total, entry, index) => {
-    const step = entry.steps.find(
+    const used = entry.steps.some(
       (item) => item.stationId === stationId && item.used && !item.skipped,
     );
-    if (!step) return total;
+    if (!used) return total;
     return (
       total +
       feedbackValue(entry.outcome) *
@@ -375,6 +437,126 @@ export interface RouteBuildOptions {
   spaceMode?: SpaceMode;
 }
 
+const QUIET_KINDS = new Set<StationKind>(["view", "nature", "rest"]);
+
+function uniqueStationOrder(entry: RouteHistoryEntry) {
+  return entry.steps.reduce<string[]>((order, step) => {
+    if (!order.includes(step.stationId)) order.push(step.stationId);
+    return order;
+  }, []);
+}
+
+function quietAffinity(feeling: Feeling, kind: StationKind) {
+  const affinity: Record<Feeling, Partial<Record<StationKind, number>>> = {
+    noise: { rest: 3, nature: 2.7, view: 2.6 },
+    eyes: { view: 3, rest: 2.8, nature: 2.4 },
+    stiff: { rest: 3, nature: 2.3, view: 2 },
+    air: { view: 3, nature: 2.7, rest: 2.2 },
+  };
+  return affinity[feeling][kind] ?? 0;
+}
+
+function transitionSeconds(spaceMode: SpaceMode) {
+  if (spaceMode === "seated") return 15;
+  if (spaceMode === "small") return 22;
+  return 35;
+}
+
+function returnSeconds(spaceMode: SpaceMode) {
+  if (spaceMode === "seated") return 40;
+  if (spaceMode === "small") return 50;
+  return 70;
+}
+
+function settleSeconds(spaceMode: SpaceMode) {
+  if (spaceMode === "seated") return 15;
+  if (spaceMode === "small") return 20;
+  return 25;
+}
+
+function arrivalSeconds(kind: StationKind) {
+  const durations: Record<StationKind, number> = {
+    view: 45,
+    water: 35,
+    threshold: 45,
+    movement: 75,
+    nature: 45,
+    rest: 35,
+    custom: 45,
+  };
+  return durations[kind];
+}
+
+function moveAction(station: Station, spaceMode: SpaceMode) {
+  if (spaceMode === "seated") {
+    return `Stay seated if you prefer. Turn or reach toward ${station.name} in the easiest way available.`;
+  }
+  if (spaceMode === "small") {
+    return `Turn away from the screen and go to ${station.name} if comfortable. Keep the route within this room.`;
+  }
+  return `Leave the screen behind and make your way to ${station.name} at a comfortable pace.`;
+}
+
+function splitQuietTime(seconds: number, durationMinutes: number) {
+  if (durationMinutes <= 5 || seconds < 210) return [seconds];
+  const first = Math.ceil(seconds / 2);
+  return [first, seconds - first];
+}
+
+function chooseAction({
+  choices,
+  station,
+  phaseIndex,
+  history,
+  feeling,
+  durationMinutes,
+  spaceMode,
+  seed,
+  exploring,
+}: {
+  choices: string[];
+  station: Station;
+  phaseIndex: number;
+  history: RouteHistoryEntry[];
+  feeling: Feeling;
+  durationMinutes: number;
+  spaceMode: SpaceMode;
+  seed: number;
+  exploring: boolean;
+}) {
+  const immediateActions =
+    history[0]?.steps
+      .filter((item) => item.stationId === station.id)
+      .map((item) => item.action) ?? [];
+  const ranked = choices
+    .map((action) => ({
+      action,
+      score:
+        seededUnit(
+          seed,
+          `action:${phaseIndex}:${station.id}:${action}`,
+        ) +
+        (exploring
+          ? 0
+          : preferenceForAction(
+              station.id,
+              action,
+              history,
+              feeling,
+              durationMinutes,
+              spaceMode,
+            ) * 0.3) -
+        (immediateActions.includes(action) ? 0.72 : 0),
+    }))
+    .sort(
+      (a, b) => b.score - a.score || a.action.localeCompare(b.action),
+    );
+  return (
+    ranked.find((item) => !immediateActions.includes(item.action))?.action ??
+    ranked[0].action
+  );
+}
+
 export function buildRoute(
   stations: Station[],
   feeling: Feeling,
@@ -392,115 +574,167 @@ export function buildRoute(
   if (eligible.length === 0) {
     throw new Error("A relay needs at least one station available in this space.");
   }
-  const stationCount = Math.min(4, eligible.length);
   const hasRatedHistory = history.some((entry) => entry.outcome !== "unrated");
   const exploring =
     hasRatedHistory && stationScore("deliberate-exploration", seed) % 5 === 0;
   const recentOrders = history
     .slice(0, 3)
-    .map((entry) => entry.steps.map((step) => step.stationId));
-  const remaining = [...eligible];
-  const chosen: Station[] = [];
+    .map(uniqueStationOrder);
 
-  for (let position = 0; position < stationCount; position += 1) {
-    const ranked = remaining
-      .map((station) => {
-        const preference = exploring
-          ? 0
-          : preferenceForStation(
-              station.id,
-              history,
-              feeling,
-              durationMinutes,
-              spaceMode,
-            );
-        const repeatedPositionPenalty = recentOrders.reduce(
-          (penalty, order, recentIndex) =>
-            penalty +
-            (order[position] === station.id
-              ? 0.58 / (recentIndex + 1)
-              : 0),
-          0,
-        );
-        return {
-          station,
-          score:
-            seededUnit(seed, `station:${position}:${station.id}`) +
-            preference * 0.24 -
-            repeatedPositionPenalty,
-        };
-      })
-      .sort(
-        (a, b) =>
-          b.score - a.score || a.station.id.localeCompare(b.station.id),
-      );
-    const next = ranked[0].station;
-    chosen.push(next);
-    remaining.splice(
-      remaining.findIndex((station) => station.id === next.id),
-      1,
+  const rankedStations = eligible
+    .map((station) => {
+      const preference = exploring
+        ? 0
+        : preferenceForStation(
+            station.id,
+            history,
+            feeling,
+            durationMinutes,
+            spaceMode,
+          );
+      const recentPenalty = exploring
+        ? 0
+        : recentOrders.reduce(
+            (penalty, order, recentIndex) =>
+              penalty +
+              (order[0] === station.id ? 0.7 / (recentIndex + 1) : 0),
+            0,
+          );
+      return {
+        station,
+        score:
+          seededUnit(seed, `station:primary:${station.id}`) +
+          (exploring ? 0 : quietAffinity(feeling, station.kind)) +
+          preference * 0.24 -
+          recentPenalty,
+      };
+    })
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.station.id.localeCompare(b.station.id),
     );
-  }
-
-  const mostRecentOrder = recentOrders[0]?.slice(0, chosen.length);
+  let station = rankedStations[0].station;
   if (
-    chosen.length > 1 &&
-    mostRecentOrder?.length === chosen.length &&
-    chosen.every((station, index) => station.id === mostRecentOrder[index])
+    !exploring &&
+    rankedStations.length > 1 &&
+    recentOrders[0]?.[0] === station.id
   ) {
-    const swapIndex = stationScore("order-swap", seed) % (chosen.length - 1);
-    [chosen[swapIndex], chosen[swapIndex + 1]] = [
-      chosen[swapIndex + 1],
-      chosen[swapIndex],
-    ];
+    station = rankedStations[1].station;
   }
 
   const totalSeconds = durationMinutes * 60;
-  const returnSeconds = 40;
-  const stationSeconds = Math.floor((totalSeconds - returnSeconds) / chosen.length);
+  const moveDuration = transitionSeconds(spaceMode);
+  const arrivalDuration = arrivalSeconds(station.kind);
+  const returnDuration = returnSeconds(spaceMode);
+  const canStay = QUIET_KINDS.has(station.kind);
+  const settleDuration = canStay ? 0 : settleSeconds(spaceMode);
+  const quietTotal =
+    totalSeconds -
+    moveDuration -
+    arrivalDuration -
+    settleDuration -
+    returnDuration;
+  if (quietTotal < 60) {
+    throw new Error("This relay boundary is too short for a safe route arc.");
+  }
   const feelingLabel = FEELINGS.find((item) => item.id === feeling)?.label ?? "";
 
-  const steps: RouteStep[] = chosen.map((station, index) => {
-    const options = ACTIONS[feeling][station.kind] ?? ACTIONS[feeling].custom;
-    const immediateAction = history[0]?.steps.find(
-      (item) => item.stationId === station.id,
-    )?.action;
-    const rankedActions = options
-      .map((action) => ({
-        action,
-        score:
-          seededUnit(seed, `action:${index}:${station.id}:${action}`) +
-          (exploring
-            ? 0
-            : preferenceForAction(
-                station.id,
-                action,
-                history,
-                feeling,
-                durationMinutes,
-                spaceMode,
-              ) * 0.3) -
-          (action === immediateAction ? 0.72 : 0),
-      }))
-      .sort(
-        (a, b) => b.score - a.score || a.action.localeCompare(b.action),
-      );
-    const nonRepeatingAction = rankedActions.find(
-      (item) => item.action !== immediateAction,
-    );
-    const action =
-      options.length > 1 && rankedActions[0].action === immediateAction
-        ? (nonRepeatingAction?.action ?? rankedActions[0].action)
-        : rankedActions[0].action;
-    return {
-      id: `${station.id}-${index}`,
-      station,
-      action,
-      spokenCue: `${station.name}. ${action}`,
-      durationSeconds: stationSeconds,
-      kind: "station",
-    };
+  const move = moveAction(station, spaceMode);
+  const arrival = chooseAction({
+    choices:
+      ARRIVAL_ACTIONS[feeling][station.kind] ??
+      ARRIVAL_ACTIONS[feeling].custom,
+    station,
+    phaseIndex: 1,
+    history,
+    feeling,
+    durationMinutes,
+    spaceMode,
+    seed,
+    exploring,
   });
+  const steps: RouteStep[] = [
+    {
+      id: `${station.id}-move`,
+      station,
+      action: move,
+      spokenCue: `Move phase. ${move}`,
+      durationSeconds: moveDuration,
+      phase: "move",
+    },
+    {
+      id: `${station.id}-arrive`,
+      station,
+      action: arrival,
+      spokenCue: `Arrival at ${station.name}. ${arrival}`,
+      durationSeconds: arrivalDuration,
+      phase: "arrive",
+    },
+  ];
+
+  const quietStation: Station = canStay
+    ? station
+    : {
+        id: "comfortable-pause",
+        name: "Comfortable pause",
+        kind: "rest",
+        detail: "No assumed destination",
+        modes: ["any", "small", "seated"],
+      };
+  if (!canStay) {
+    const settle =
+      spaceMode === "seated"
+        ? "Stay seated and turn away from the screen, or choose another comfortable position within easy reach."
+        : "Settle somewhere comfortable away from the screen, or simply turn where you are. No particular place is required.";
+    steps.push({
+      id: `${station.id}-settle`,
+      station: quietStation,
+      action: settle,
+      spokenCue: `Settle phase. ${settle}`,
+      durationSeconds: settleDuration,
+      phase: "settle",
+    });
+  }
+
+  const quietChoices = canStay
+    ? QUIET_ACTIONS[feeling][
+        station.kind as "view" | "nature" | "rest"
+      ]
+    : QUIET_ACTIONS[feeling].rest;
+  const usedQuietActions: string[] = [];
+  for (const [index, seconds] of splitQuietTime(
+    quietTotal,
+    durationMinutes,
+  ).entries()) {
+    const action = chooseAction({
+      choices:
+        quietChoices.filter((choice) => !usedQuietActions.includes(choice))
+          .length > 0
+          ? quietChoices.filter(
+              (choice) => !usedQuietActions.includes(choice),
+            )
+          : [...quietChoices],
+      station: quietStation,
+      phaseIndex: index + 2,
+      history: canStay ? history : [],
+      feeling,
+      durationMinutes,
+      spaceMode,
+      seed,
+      exploring,
+    });
+    usedQuietActions.push(action);
+    steps.push({
+      id: `${quietStation.id}-quiet-${index + 1}`,
+      station: quietStation,
+      action,
+      spokenCue: canStay
+        ? `Stay at ${station.name} if it remains comfortable. ${action}`
+        : `Stay with this comfortable pause if it suits you. ${action}`,
+      durationSeconds: seconds,
+      phase: "quiet",
+    });
+  }
 
   steps.push({
     id: "return",
@@ -513,10 +747,9 @@ export function buildRoute(
     },
     action: `Make your way back at an easy pace. Your ${feelingLabel.toLowerCase()} relay is complete.`,
     spokenCue:
-      "This is your return cue. Make your way back at an easy pace. Your break relay is complete.",
-    durationSeconds:
-      totalSeconds - stationSeconds * chosen.length || returnSeconds,
-    kind: "return",
+      "Return phase. Make your way back at an easy pace. This return window ends at your break boundary.",
+    durationSeconds: returnDuration,
+    phase: "return",
   });
 
   return steps;
@@ -541,8 +774,8 @@ export function buildExtension(feeling: Feeling): RouteStep {
       modes: ["any", "small", "seated"],
     },
     action,
-    spokenCue: `Two quiet minutes. ${action}`,
+    spokenCue: `Quiet extension. ${action}`,
     durationSeconds: 120,
-    kind: "extension",
+    phase: "extension",
   };
 }

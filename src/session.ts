@@ -6,6 +6,13 @@ import type {
 
 const SECOND = 1000;
 
+function isLearnableStep(step: RouteStep) {
+  return (
+    step.phase === "arrive" ||
+    (step.phase === "quiet" && step.station.id !== "comfortable-pause")
+  );
+}
+
 function routeDurationMs(route: RouteStep[]) {
   return route.reduce(
     (total, step) => total + step.durationSeconds * SECOND,
@@ -21,14 +28,12 @@ function createSessionId(now: number) {
   return `relay-${now}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function reachedThrough(route: RouteStep[], index: number, existing: string[]) {
+function reachedAt(route: RouteStep[], index: number, existing: string[]) {
+  const step = route[index];
   return [
     ...new Set([
       ...existing,
-      ...route
-        .slice(0, index + 1)
-        .filter((step) => step.kind === "station")
-        .map((step) => step.id),
+      ...(step && isLearnableStep(step) ? [step.id] : []),
     ]),
   ];
 }
@@ -59,14 +64,14 @@ export function createSession({
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 3,
+    version: 4,
     id: id ?? createSessionId(now),
     route,
     routeContext,
     skippedStepIds,
     reachedStepIds:
       reachedStepIds ??
-      (route[0].kind === "station" ? [route[0].id] : []),
+      (isLearnableStep(route[0]) ? [route[0].id] : []),
     startedAt: now,
     stepDeadlineAt: now + firstStepMs,
     deadlineAt: now + routeDurationMs(route),
@@ -105,11 +110,6 @@ export function reconcileSession(
     return {
       ...session,
       currentStepIndex: session.route.length - 1,
-      reachedStepIds: reachedThrough(
-        session.route,
-        session.route.length - 1,
-        session.reachedStepIds,
-      ),
       status: "complete",
       completedAt: session.deadlineAt,
       updatedAt: now,
@@ -136,7 +136,7 @@ export function reconcileSession(
       ...session,
       currentStepIndex,
       stepDeadlineAt,
-      reachedStepIds: reachedThrough(
+      reachedStepIds: reachedAt(
         session.route,
         currentStepIndex,
         session.reachedStepIds,
@@ -158,7 +158,7 @@ export function reconcileSession(
     ...session,
     currentStepIndex,
     stepDeadlineAt,
-    reachedStepIds: reachedThrough(
+    reachedStepIds: reachedAt(
       session.route,
       currentStepIndex,
       session.reachedStepIds,
@@ -211,7 +211,7 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
     .slice(currentStepIndex + 1)
     .reduce((total, step) => total + step.durationSeconds * SECOND, 0);
   const skippedStepIds =
-    current.route[current.currentStepIndex].kind === "station"
+    isLearnableStep(current.route[current.currentStepIndex])
       ? [
           ...current.skippedStepIds,
           current.route[current.currentStepIndex].id,
@@ -222,7 +222,7 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
     ...current,
     currentStepIndex,
     skippedStepIds,
-    reachedStepIds: reachedThrough(
+    reachedStepIds: reachedAt(
       current.route,
       currentStepIndex,
       current.reachedStepIds,

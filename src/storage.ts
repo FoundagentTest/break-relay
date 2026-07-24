@@ -73,10 +73,28 @@ export function clearPreferences() {
   window.localStorage.removeItem(STORAGE_KEY);
 }
 
-function isRouteStep(value: unknown): value is RouteStep {
-  if (!value || typeof value !== "object") return false;
-  const step = value as Partial<RouteStep>;
-  return (
+function normalizeRouteStep(value: unknown): RouteStep | null {
+  if (!value || typeof value !== "object") return null;
+  const step = value as Partial<RouteStep> & { kind?: string };
+  const legacyPhase =
+    step.kind === "station"
+      ? "arrive"
+      : step.kind === "return"
+        ? "return"
+        : step.kind === "extension"
+          ? "extension"
+          : null;
+  const phase = [
+    "move",
+    "arrive",
+    "quiet",
+    "settle",
+    "return",
+    "extension",
+  ].includes(step.phase ?? "")
+    ? step.phase
+    : legacyPhase;
+  const valid =
     typeof step.id === "string" &&
     typeof step.action === "string" &&
     typeof step.spokenCue === "string" &&
@@ -84,8 +102,16 @@ function isRouteStep(value: unknown): value is RouteStep {
     step.durationSeconds > 0 &&
     !!step.station &&
     typeof step.station.name === "string" &&
-    ["station", "return", "extension"].includes(step.kind ?? "")
-  );
+    phase !== null;
+  if (!valid) return null;
+  return {
+    id: step.id as string,
+    station: step.station as RouteStep["station"],
+    action: step.action as string,
+    spokenCue: step.spokenCue as string,
+    durationSeconds: step.durationSeconds as number,
+    phase: phase as RouteStep["phase"],
+  };
 }
 
 function normalizeRouteContext(value: unknown): SessionRouteContext | null {
@@ -126,20 +152,25 @@ function normalizeSession(value: unknown): ActiveSession | null {
   const session = value as Omit<Partial<ActiveSession>, "version"> & {
     version?: number;
   };
+  const normalizedRoute = Array.isArray(session.route)
+    ? session.route.map(normalizeRouteStep)
+    : [];
   const valid =
     (session.version === 1 ||
       session.version === 2 ||
-      session.version === 3) &&
+      session.version === 3 ||
+      session.version === 4) &&
     typeof session.id === "string" &&
-    Array.isArray(session.route) &&
-    session.route.length > 0 &&
-    session.route.every(isRouteStep) &&
+    normalizedRoute.length > 0 &&
+    normalizedRoute.every(
+      (step): step is RouteStep => step !== null,
+    ) &&
     typeof session.startedAt === "number" &&
     typeof session.stepDeadlineAt === "number" &&
     typeof session.deadlineAt === "number" &&
     typeof session.currentStepIndex === "number" &&
     session.currentStepIndex >= 0 &&
-    session.currentStepIndex < session.route.length &&
+    session.currentStepIndex < normalizedRoute.length &&
     typeof session.paused === "boolean" &&
     (session.pausedAt === null || typeof session.pausedAt === "number") &&
     (session.status === "active" || session.status === "complete") &&
@@ -153,9 +184,10 @@ function normalizeSession(value: unknown): ActiveSession | null {
       typeof session.lastAnnouncedStepId === "string") &&
     typeof session.updatedAt === "number";
   if (!valid) return null;
+  const route = normalizedRoute as RouteStep[];
   const routeContext = normalizeRouteContext(session.routeContext);
   const routeIds = new Set([
-    ...(session.route?.map((step) => step.id) ?? []),
+    ...route.map((step) => step.id),
     ...(routeContext?.steps.map((step) => step.stepId) ?? []),
   ]);
   const skippedStepIds = Array.isArray(session.skippedStepIds)
@@ -167,9 +199,14 @@ function normalizeSession(value: unknown): ActiveSession | null {
     ? session.reachedStepIds.filter(
         (id): id is string => typeof id === "string" && routeIds.has(id),
       )
-    : (session.route ?? [])
+    : route
         .slice(0, (session.currentStepIndex ?? 0) + 1)
-        .filter((step) => step.kind === "station")
+        .filter(
+          (step) =>
+            step.phase === "arrive" ||
+            (step.phase === "quiet" &&
+              step.station.id !== "comfortable-pause"),
+        )
         .map((step) => step.id);
   return {
     ...(session as Omit<
@@ -181,7 +218,8 @@ function normalizeSession(value: unknown): ActiveSession | null {
       | "cueDeliveryFailed"
       | "wakeLockFailed"
     >),
-    version: 3,
+    version: 4,
+    route,
     routeContext,
     skippedStepIds,
     reachedStepIds,

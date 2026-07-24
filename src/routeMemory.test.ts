@@ -46,7 +46,12 @@ function historyEntry({
     durationMinutes: 5,
     spaceMode,
     steps: route
-      .filter((step) => step.kind === "station")
+      .filter(
+        (step) =>
+          step.phase === "arrive" ||
+          (step.phase === "quiet" &&
+            step.station.id !== "comfortable-pause"),
+      )
       .map((step) => ({
         stepId: step.id,
         stationId: step.station.id,
@@ -148,7 +153,14 @@ describe("local route memory", () => {
     const context = {
       feeling: "eyes" as const,
       spaceMode: "any" as const,
-      steps: route.slice(0, -1).map((step) => ({
+      steps: route
+        .filter(
+          (step) =>
+            step.phase === "arrive" ||
+            (step.phase === "quiet" &&
+              step.station.id !== "comfortable-pause"),
+        )
+        .map((step) => ({
         stepId: step.id,
         stationId: step.station.id,
         stationName: step.station.name,
@@ -164,7 +176,8 @@ describe("local route memory", () => {
       now: 1_000,
       id: "extended",
     });
-    const skipped = skipStep(started, 2_000);
+    const atArrival = reconcileSession(started, started.stepDeadlineAt);
+    const skipped = skipStep(atArrival, started.stepDeadlineAt + 1_000);
     const atBoundary = reconcileSession(skipped, skipped.deadlineAt);
     const extension = replaceWithExtension(
       atBoundary,
@@ -189,16 +202,91 @@ describe("local route memory", () => {
       outcome: "useful",
       completedAt: 6_000,
     });
-    expect(entry?.steps).toHaveLength(3);
+    expect(entry?.steps).toHaveLength(2);
     expect(entry?.steps[0].skipped).toBe(true);
     expect(entry?.steps[0].used).toBe(false);
     expect(entry?.steps[1].skipped).toBe(false);
     expect(entry?.steps[1].used).toBe(true);
   });
+
+  it("leaves action phases crossed during recovery neutral", () => {
+    const route = buildRoute(
+      [
+        STATION_PRESETS.find((station) => station.id === "window")!,
+        STATION_PRESETS.find((station) => station.id === "plant")!,
+        STATION_PRESETS.find(
+          (station) => station.id === "quiet-corner",
+        )!,
+      ],
+      "noise",
+      7,
+      61,
+    );
+    const context = {
+      feeling: "noise" as const,
+      spaceMode: "any" as const,
+      steps: route
+        .filter(
+          (step) =>
+            step.phase === "arrive" || step.phase === "quiet",
+        )
+        .map((step) => ({
+          stepId: step.id,
+          stationId: step.station.id,
+          stationName: step.station.name,
+          action: step.action,
+        })),
+    };
+    const started = createSession({
+      route,
+      durationMinutes: 7,
+      audioEnabled: false,
+      keepAwake: false,
+      routeContext: context,
+      now: 1_000,
+      id: "missed-actions",
+    });
+    const quietIndex = route.findIndex(
+      (step) => step.phase === "quiet",
+    );
+    const quietStartedAt =
+      1_000 +
+      route
+        .slice(0, quietIndex)
+        .reduce(
+          (total, step) => total + step.durationSeconds * 1_000,
+          0,
+        );
+    const caughtUp = reconcileSession(started, quietStartedAt + 1_000);
+    const finished = completeSession(caughtUp, true, quietStartedAt + 2_000);
+    const entry = createRouteHistoryEntry(
+      finished,
+      { feeling: "noise", spaceMode: "any" },
+      "useful",
+      quietStartedAt + 3_000,
+    );
+
+    expect(entry?.steps.find((step) =>
+      step.stepId.includes("-arrive"),
+    )?.used).toBe(false);
+    expect(entry?.steps.find((step) =>
+      step.stepId.endsWith("quiet-1"),
+    )?.used).toBe(true);
+    expect(entry?.steps.find((step) =>
+      step.stepId.endsWith("quiet-2"),
+    )?.used).toBe(false);
+  });
 });
 
 describe("adaptive route assembly", () => {
-  const stations = STATION_PRESETS.slice(0, 6);
+  const stations = [
+    STATION_PRESETS.find((station) => station.id === "window")!,
+    STATION_PRESETS.find((station) => station.id === "plant")!,
+    STATION_PRESETS.find((station) => station.id === "quiet-corner")!,
+    STATION_PRESETS.find((station) => station.id === "water")!,
+    STATION_PRESETS.find((station) => station.id === "doorway")!,
+    STATION_PRESETS.find((station) => station.id === "clear-floor")!,
+  ];
 
   it("is deterministic without history and uses only configured, mode-safe stations", () => {
     const first = buildRoute(stations, "air", 7, 2026, {
@@ -211,10 +299,10 @@ describe("adaptive route assembly", () => {
     });
 
     expect(second).toEqual(first);
-    expect(first.at(-1)?.kind).toBe("return");
+    expect(first.at(-1)?.phase).toBe("return");
     expect(
       first
-        .slice(0, -1)
+        .filter((step) => step.phase !== "return")
         .every(
           (step) =>
             stations.some((station) => station.id === step.station.id) &&
@@ -281,13 +369,16 @@ describe("adaptive route assembly", () => {
 
     const baseline = countTarget([], "noise", "any");
     const similarUseful = countTarget(usefulHistory, "noise", "any");
+    const differentBaseline = countTarget([], "eyes", "any");
     const differentContext = countTarget(usefulHistory, "eyes", "any");
     const similarNotFit = countTarget(notFitHistory, "noise", "any");
 
     expect(similarUseful.stationCount).toBeGreaterThan(baseline.stationCount);
     expect(similarUseful.actionCount).toBeGreaterThan(baseline.actionCount);
-    expect(similarUseful.stationCount).toBeGreaterThan(
-      differentContext.stationCount,
+    expect(
+      similarUseful.stationCount - baseline.stationCount,
+    ).toBeGreaterThan(
+      differentContext.stationCount - differentBaseline.stationCount,
     );
     expect(similarNotFit.stationCount).toBeLessThan(baseline.stationCount);
   });
@@ -305,13 +396,19 @@ describe("adaptive route assembly", () => {
       history: [recent],
       spaceMode: "any",
     });
-    const firstStations = first.slice(0, -1).map((step) => step.station.id);
-    const nextStations = next.slice(0, -1).map((step) => step.station.id);
+    const firstStations = first
+      .filter((step) => step.phase === "move")
+      .map((step) => step.station.id);
+    const nextStations = next
+      .filter((step) => step.phase === "move")
+      .map((step) => step.station.id);
 
     expect(nextStations).not.toEqual(firstStations);
-    for (const step of next.slice(0, -1)) {
+    for (const step of next.filter((item) => item.phase === "arrive")) {
       const prior = first.find(
-        (item) => item.station.id === step.station.id,
+        (item) =>
+          item.phase === "arrive" &&
+          item.station.id === step.station.id,
       );
       if (prior) expect(step.action).not.toBe(prior.action);
     }

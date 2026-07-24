@@ -568,7 +568,7 @@ function AudioChoice({
         <strong>Spoken cues</strong>
         <p>
           {speechAvailable
-            ? "Your browser will calmly announce each new stop. No headphones required."
+            ? "Your browser will calmly distinguish moving, staying, and returning. No headphones required."
             : "Speech is unavailable in this browser. Large visual cues stay on screen, and vibration is used where supported."}
         </p>
         {enabled && speechAvailable && (
@@ -622,8 +622,9 @@ function TuneSetup({
             <p className="eyebrow">ONE LAST CHOICE</p>
             <h1>Shape this break around right now.</h1>
             <p className="lede">
-              Relay will choose an order and one light action for each stop. It
-              won’t ask you to keep checking the screen.
+              Relay will choose one meaningful place, a light arrival action,
+              quiet that fits the setting, and enough time to return. It won’t
+              ask you to keep checking the screen.
             </p>
           </div>
           <StepRail current={2} />
@@ -651,7 +652,7 @@ function TuneSetup({
               <span>minutes</span>
             </div>
             <p>
-              {draft.stations.length} real stops ·{" "}
+              {draft.stations.length} saved places in rotation ·{" "}
               {FEELINGS.find((item) => item.id === draft.feeling)?.label.toLowerCase()}
             </p>
             <div className="mini-route" aria-label="Your relay stations">
@@ -884,7 +885,7 @@ function Readiness({
               <Icon name="arrow" />
             </button>
             <small>
-              No sample is required. Your first station cue plays from this
+              No sample is required. Your first move cue plays from this
               action.
             </small>
           </aside>
@@ -920,7 +921,9 @@ function Recovery({
         </p>
         <div className="recovery-card">
           <div>
-            <span>{session.paused ? "PAUSED" : "CURRENT CUE"}</span>
+            <span>
+              {session.paused ? "PAUSED" : phaseKicker(step.phase)}
+            </span>
             <strong>{step.station.name}</strong>
             <p>{step.action}</p>
           </div>
@@ -936,7 +939,7 @@ function Recovery({
             <div>
               <dt>Route</dt>
               <dd>
-                Step {session.currentStepIndex + 1} of {session.route.length}
+                Phase {session.currentStepIndex + 1} of {session.route.length}
               </dd>
             </div>
           </dl>
@@ -1028,8 +1031,8 @@ function Home({
               <span>minute relay</span>
             </div>
             <p className="ready-description">
-              One cue at a time through {preferences.stations.length} places.
-              Then a clear invitation back.
+              One sparse route drawn from {preferences.stations.length} saved
+              places, with a quiet middle and a clear invitation back.
             </p>
             <ol className="ready-route" aria-label="Saved relay points">
               {preferences.stations.slice(0, 4).map((station, index) => (
@@ -1274,8 +1277,8 @@ function SettingsPanel({
             <h3>Route learning stays here</h3>
             <p>
               When you rate a route, Relay keeps a short history in this browser
-              to vary the next order and favor what fit in similar moments. It is
-              never sent anywhere.
+              to vary the next place and favor station actions that fit in
+              similar moments. It is never sent anywhere.
             </p>
             {!confirmHistoryReset ? (
               <button
@@ -1357,6 +1360,28 @@ function SettingsPanel({
 function formatBoundary(seconds: number) {
   if (seconds <= 60) return "Under a minute remains";
   return `About ${Math.ceil(seconds / 60)} min remain`;
+}
+
+function phaseKicker(phase: ActiveSession["route"][number]["phase"]) {
+  const labels = {
+    move: "MOVE TO",
+    arrive: "ARRIVE & DO",
+    quiet: "STAY HERE",
+    settle: "SETTLE AWAY",
+    return: "RETURN CUE",
+    extension: "QUIET EXTENSION",
+  };
+  return labels[phase];
+}
+
+function phaseHeader(
+  phase: ActiveSession["route"][number]["phase"],
+  current: number,
+  total: number,
+) {
+  if (phase === "extension") return "QUIET EXTENSION";
+  if (phase === "return") return "RETURN PHASE";
+  return `PHASE ${current + 1} OF ${total}`;
 }
 
 type WakeLockStatus = "idle" | "requesting" | "held" | "released" | "failed";
@@ -1537,8 +1562,8 @@ function RelaySession({
   ]);
 
   useEffect(() => {
-    document.title = `${step.station.name} · Break Relay`;
-  }, [step.station.name]);
+    document.title = `${phaseKicker(step.phase)}: ${step.station.name} · Break Relay`;
+  }, [step.phase, step.station.name]);
 
   useEffect(() => {
     function tick() {
@@ -1603,9 +1628,11 @@ function RelaySession({
         <Brand quiet />
         <div className="session-boundary" aria-live="polite">
           <span>
-            {step.kind === "extension"
-              ? "QUIET EXTENSION"
-              : `STOP ${session.currentStepIndex + 1} OF ${session.route.length}`}
+            {phaseHeader(
+              step.phase,
+              session.currentStepIndex,
+              session.route.length,
+            )}
           </span>
           <strong>
             {session.paused ? "Relay paused" : formatBoundary(totalRemaining)}
@@ -1635,9 +1662,7 @@ function RelaySession({
             <span className="cue-pulse" aria-hidden="true" />
             {session.paused
               ? "PAUSED HERE"
-              : step.kind === "return"
-                ? "RETURN CUE"
-                : "GO TO"}
+              : phaseKicker(step.phase)}
           </div>
           <h1>{step.station.name}</h1>
           <div className="cue-divider" />
@@ -1652,7 +1677,7 @@ function RelaySession({
             <Icon name="spark" size={18} />
             <p>
               <strong>Audio isn’t available here.</strong> Keep this large cue
-              visible. The page title also changes at every stop, and vibration is
+              visible. The page title also changes at every phase, and vibration is
               used where supported. Your route and clock are unchanged; launch
               setup will be ready to revise next time.
             </p>
@@ -1680,7 +1705,7 @@ function RelaySession({
             <span>
               <Icon name="skip" size={20} />
             </span>
-            Skip stop
+            Skip phase
           </button>
         </div>
         {session.keepAwake && (
@@ -1795,7 +1820,7 @@ function Completion({
         </div>
         <p className="completion-note">
           {session.skippedStepIds.length > 0
-            ? "Skipped stops stay neutral. Relay learns only from what you used and explicitly chose."
+            ? "Skipped or unreached action phases stay neutral. Relay learns only from what you used and explicitly chose."
             : "This choice shapes route variety only. It is not a health or productivity assessment."}
         </p>
       </section>
@@ -1923,7 +1948,12 @@ export default function App() {
         feeling: nextPreferences.feeling,
         spaceMode: nextPreferences.spaceMode,
         steps: route
-          .filter((step) => step.kind === "station")
+          .filter(
+            (step) =>
+              step.phase === "arrive" ||
+              (step.phase === "quiet" &&
+                step.station.id !== "comfortable-pause"),
+          )
           .map((step) => ({
             stepId: step.id,
             stationId: step.station.id,

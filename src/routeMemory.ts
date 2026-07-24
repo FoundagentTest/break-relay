@@ -208,7 +208,12 @@ export function createRouteHistoryEntry(
   const sourceSteps =
     context?.steps ??
     session.route
-      .filter((step) => step.kind === "station")
+      .filter(
+        (step) =>
+          step.phase === "arrive" ||
+          (step.phase === "quiet" &&
+            step.station.id !== "comfortable-pause"),
+      )
       .map((step) => ({
         stepId: step.id,
         stationId: step.station.id,

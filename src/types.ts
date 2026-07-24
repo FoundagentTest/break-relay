@@ -43,7 +43,7 @@ export interface RouteStep {
   action: string;
   spokenCue: string;
   durationSeconds: number;
-  kind: "station" | "return" | "extension";
+  phase: "move" | "arrive" | "quiet" | "settle" | "return" | "extension";
 }
 
 export type RouteOutcome = "useful" | "not_fit" | "unrated";
@@ -82,7 +82,7 @@ export interface SessionRouteContext {
 }
 
 export interface ActiveSession {
-  version: 3;
+  version: 4;
   id: string;
   route: RouteStep[];
   routeContext: SessionRouteContext | null;

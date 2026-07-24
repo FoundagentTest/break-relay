@@ -76,7 +76,7 @@ describe("Break Relay", () => {
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Repeat cue" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skip stop" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skip phase" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "End early" })).toBeInTheDocument();
     expect(screen.getByText(/About 5 min remain/)).toBeInTheDocument();
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
@@ -87,7 +87,7 @@ describe("Break Relay", () => {
     await user.click(screen.getByRole("button", { name: "Resume" }));
 
     for (let index = 0; index < 4; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Skip stop" }));
+      await user.click(screen.getByRole("button", { name: "Skip phase" }));
     }
 
     expect(
@@ -103,7 +103,7 @@ describe("Break Relay", () => {
     expect(
       screen.getByRole("heading", { name: "Two quiet minutes" }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Skip stop" }));
+    await user.click(screen.getByRole("button", { name: "Skip phase" }));
 
     expect(
       screen.queryByRole("button", { name: /Add two quiet minutes/ }),
@@ -257,6 +257,65 @@ describe("Break Relay", () => {
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
   });
 
+  it("labels and speaks a same-place follow-up as staying, not moving again", async () => {
+    const user = userEvent.setup();
+    const stations = [
+      STATION_PRESETS.find((station) => station.id === "window")!,
+      STATION_PRESETS.find((station) => station.id === "plant")!,
+      STATION_PRESETS.find(
+        (station) => station.id === "quiet-corner",
+      )!,
+    ];
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations,
+        feeling: "eyes",
+        duration: 7,
+        spaceMode: "any",
+        audioEnabled: true,
+        hasOnboarded: true,
+      }),
+    );
+    const route = buildRoute(stations, "eyes", 7, 27);
+    const quietIndex = route.findIndex((step) => step.phase === "quiet");
+    const elapsedBeforeQuiet = route
+      .slice(0, quietIndex)
+      .reduce(
+        (total, step) => total + step.durationSeconds * 1_000,
+        0,
+      );
+    saveSession(
+      createSession({
+        route,
+        durationMinutes: 7,
+        audioEnabled: true,
+        keepAwake: false,
+        now: Date.now() - elapsedBeforeQuiet - 1_000,
+        id: "same-place-follow-up",
+      }),
+    );
+
+    render(<App />);
+
+    expect(screen.getByText("STAY HERE")).toBeVisible();
+    expect(
+      screen.getByText(`Phase ${quietIndex + 1} of ${route.length}`),
+    ).toBeVisible();
+    expect(
+      screen.getByText(route[quietIndex].station.name),
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Resume this relay" }),
+    );
+    expect(screen.getByText("STAY HERE")).toBeVisible();
+    expect(screen.getByText(/PHASE \d+ OF \d+/)).toBeVisible();
+    const utterance = vi.mocked(window.speechSynthesis.speak).mock
+      .calls[0][0] as SpeechSynthesisUtterance;
+    expect(utterance.text).toMatch(/^Stay at /);
+    expect(utterance.text).not.toContain("Move phase");
+  });
+
   it("discards only the interrupted session and keeps saved stations", async () => {
     const user = userEvent.setup();
     const preferences = {
@@ -351,12 +410,19 @@ describe("Break Relay", () => {
       routeContext: {
         feeling: "air",
         spaceMode: "any",
-        steps: route.slice(0, -1).map((step) => ({
-          stepId: step.id,
-          stationId: step.station.id,
-          stationName: step.station.name,
-          action: step.action,
-        })),
+        steps: route
+          .filter(
+            (step) =>
+              step.phase === "arrive" ||
+              (step.phase === "quiet" &&
+                step.station.id !== "comfortable-pause"),
+          )
+          .map((step) => ({
+            stepId: step.id,
+            stationId: step.station.id,
+            stationName: step.station.name,
+            action: step.action,
+          })),
       },
     });
     saveSession(completeSession(started, false, 10_000));
@@ -408,20 +474,28 @@ describe("Break Relay", () => {
       routeContext: {
         feeling: "stiff",
         spaceMode: "any",
-        steps: route.slice(0, -1).map((step) => ({
-          stepId: step.id,
-          stationId: step.station.id,
-          stationName: step.station.name,
-          action: step.action,
-        })),
+        steps: route
+          .filter(
+            (step) =>
+              step.phase === "arrive" ||
+              (step.phase === "quiet" &&
+                step.station.id !== "comfortable-pause"),
+          )
+          .map((step) => ({
+            stepId: step.id,
+            stationId: step.station.id,
+            stationName: step.station.name,
+            action: step.action,
+          })),
       },
     });
-    const skipped = skipStep(started, 2_000);
+    const moved = skipStep(started, 2_000);
+    const skipped = skipStep(moved, 3_000);
     saveSession(completeSession(skipped, true, 3_000));
 
     render(<App />);
     expect(screen.getByText(/Stopping early is a complete choice, not a rating/i)).toBeVisible();
-    expect(screen.getByText(/Skipped stops stay neutral/i)).toBeVisible();
+    expect(screen.getByText(/Skipped or unreached action phases stay neutral/i)).toBeVisible();
     expect(
       screen.queryByRole("button", { name: /Add two quiet minutes/ }),
     ).not.toBeInTheDocument();
@@ -851,9 +925,15 @@ describe("route assembly", () => {
       0,
     );
 
-    expect(route).toHaveLength(5);
-    expect(route.at(-1)?.kind).toBe("return");
-    expect(route.at(-1)?.spokenCue).toContain("return cue");
+    expect(route.map((step) => step.phase)).toEqual([
+      "move",
+      "arrive",
+      "quiet",
+      "quiet",
+      "return",
+    ]);
+    expect(route.at(-1)?.phase).toBe("return");
+    expect(route.at(-1)?.spokenCue).toContain("Return phase");
     expect(routeSeconds).toBe(7 * 60);
     expect(route.slice(0, -1).every((step) => step.action.length > 20)).toBe(true);
     expect(

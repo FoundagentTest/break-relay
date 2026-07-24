@@ -9,6 +9,7 @@ import {
   shouldAnnounceCue,
   skipStep,
 } from "./session";
+import { buildRoute, STATION_PRESETS } from "./data";
 import { loadSession, SESSION_STORAGE_KEY } from "./storage";
 import type { RouteStep } from "./types";
 
@@ -25,7 +26,7 @@ function route(): RouteStep[] {
     action: `Action ${index}`,
     spokenCue: `Cue ${index}`,
     durationSeconds: 10,
-    kind: index === 2 ? "return" : "station",
+    phase: index === 2 ? "return" : "arrive",
   }));
 }
 
@@ -141,15 +142,19 @@ describe("wall-clock relay reconciliation", () => {
       reachedStepIds: _reachedStepIds,
       ...legacy
     } = current;
+    const legacyRoute = legacy.route.map(({ phase, ...step }) => ({
+      ...step,
+      kind: phase === "return" ? "return" : "station",
+    }));
     localStorage.setItem(
       SESSION_STORAGE_KEY,
-      JSON.stringify({ ...legacy, version: 1 }),
+      JSON.stringify({ ...legacy, route: legacyRoute, version: 1 }),
     );
 
     const recovered = loadSession(2_000);
 
     expect(recovered).toMatchObject({
-      version: 3,
+      version: 4,
       id: "legacy-active",
       status: "active",
       currentStepIndex: 0,
@@ -159,5 +164,52 @@ describe("wall-clock relay reconciliation", () => {
       cueDeliveryFailed: false,
       wakeLockFailed: false,
     });
+    expect(recovered?.route.every((step) => step.phase)).toBe(true);
+  });
+
+  it("keeps phases crossed during a visibility catch-up neutral", () => {
+    const phases = buildRoute(
+      [
+        STATION_PRESETS.find((station) => station.id === "window")!,
+        STATION_PRESETS.find((station) => station.id === "plant")!,
+        STATION_PRESETS.find(
+          (station) => station.id === "quiet-corner",
+        )!,
+      ],
+      "eyes",
+      7,
+      18,
+    );
+    const started = createSession({
+      route: phases,
+      durationMinutes: 7,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "visibility-catch-up",
+    });
+    const firstQuietIndex = phases.findIndex(
+      (step) => step.phase === "quiet",
+    );
+    const firstQuietStart =
+      1_000 +
+      phases
+        .slice(0, firstQuietIndex)
+        .reduce(
+          (total, step) => total + step.durationSeconds * 1_000,
+          0,
+        );
+
+    const caughtUp = reconcileSession(started, firstQuietStart + 1_000);
+
+    expect(caughtUp.currentStepIndex).toBe(firstQuietIndex);
+    expect(caughtUp.reachedStepIds).toEqual([
+      phases[firstQuietIndex].id,
+    ]);
+    expect(
+      caughtUp.reachedStepIds,
+    ).not.toContain(
+      phases.find((step) => step.phase === "arrive")?.id,
+    );
   });
 });

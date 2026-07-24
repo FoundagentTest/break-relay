@@ -42,3 +42,7 @@ Break Relay has no backend, accounts, analytics, or runtime secrets.
 Preferences, an unfinished relay, and a bounded route-learning history are
 stored only in browser `localStorage`. Route history can be erased without
 removing saved stations; resetting local data clears all three.
+
+Route composition uses distinct move, arrival, quiet, and return phases. Longer
+boundaries add quiet at one suitable place instead of padding quick actions or
+inventing extra travel; see [docs/route-composition.md](docs/route-composition.md).
