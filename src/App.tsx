@@ -1322,7 +1322,9 @@ function RelaySession({
       announce(resumed, true);
     } else {
       window.speechSynthesis?.cancel?.();
-      commit(pauseSession(current));
+      const paused = pauseSession(current);
+      if (paused.status === "complete") finish(paused);
+      else commit(paused);
     }
   }
 

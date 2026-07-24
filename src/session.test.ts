@@ -66,6 +66,23 @@ describe("wall-clock relay reconciliation", () => {
     expect(remainingMs(elapsed, 60_000)).toBe(0);
   });
 
+  it("cannot pause an already elapsed relay back into active state", () => {
+    const started = createSession({
+      route: route(),
+      durationMinutes: 1,
+      audioEnabled: false,
+      keepAwake: true,
+      now: 1_000,
+      id: "late-pause",
+    });
+
+    const latePause = pauseSession(started, 40_000);
+
+    expect(latePause.status).toBe("complete");
+    expect(latePause.paused).toBe(false);
+    expect(latePause.completedAt).toBe(31_000);
+  });
+
   it("freezes both step and overall deadlines while paused", () => {
     const started = createSession({
       route: route(),
