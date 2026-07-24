@@ -2,6 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
+import { capabilitySignature } from "./readiness";
 import { buildRoute, DEFAULT_PREFERENCES, STATION_PRESETS } from "./data";
 import { completeSession, createSession, skipStep } from "./session";
 import { ROUTE_MEMORY_STORAGE_KEY } from "./routeMemory";
@@ -13,7 +14,21 @@ import {
 
 const availableSpeech = window.speechSynthesis;
 const availableUtterance = window.SpeechSynthesisUtterance;
+const availableAudio = window.Audio;
 const availableWakeLock = Object.getOwnPropertyDescriptor(navigator, "wakeLock");
+
+function verifiedSnapshot(wakeLock = false) {
+  return {
+    speech: true,
+    wakeLock,
+    checkedAt: Date.now(),
+    signature: capabilitySignature(),
+    chimeVerified: true,
+    visualOnlyAcknowledged: false,
+    speechVerified: true,
+    wakeVerified: wakeLock,
+  };
+}
 
 function storedActiveSpace() {
   const stored = JSON.parse(
@@ -38,6 +53,14 @@ describe("Break Relay", () => {
     Object.defineProperty(window, "SpeechSynthesisUtterance", {
       configurable: true,
       value: availableUtterance,
+    });
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: availableAudio,
+    });
+    Object.defineProperty(globalThis, "Audio", {
+      configurable: true,
+      value: availableAudio,
     });
     if (availableWakeLock) {
       Object.defineProperty(navigator, "wakeLock", availableWakeLock);
@@ -76,12 +99,12 @@ describe("Break Relay", () => {
       }),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/locked-screen delivery still depends/i),
+      screen.getByText(/locked-screen playback may be silenced/i),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Test voice (optional)" }),
     ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+    await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Repeat cue" })).toBeInTheDocument();
@@ -181,7 +204,7 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: /Start this relay/ }),
     );
     await user.click(
-      screen.getByRole("button", { name: /Start and step away/ }),
+      screen.getByRole("button", { name: /step away/i }),
     );
 
     expect(screen.getByText("NEXT PLACE")).toBeVisible();
@@ -476,11 +499,11 @@ describe("Break Relay", () => {
     render(<App />);
 
     expect(
-      screen.getByRole("heading", { name: "You’re back at the boundary." }),
+      screen.getByRole("heading", { name: "Your return boundary is here." }),
     ).toBeInTheDocument();
     expect(screen.getByText(/original 5-minute deadline passed/i)).toBeVisible();
     expect(screen.getByText(/no time was added/i)).toBeVisible();
-    expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
     expect(
       JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}").status,
     ).toBe("complete");
@@ -643,10 +666,10 @@ describe("Break Relay", () => {
     expect(screen.getByText("VISUAL CUES ONLY")).toBeInTheDocument();
     expect(screen.getByText("SYSTEM FALLBACK")).toBeInTheDocument();
     expect(
-      screen.getByText(/use your device’s timer as a backup/i),
+      screen.getByText(/set a 5-minute device timer/i),
     ).toBeVisible();
     expect(
-      screen.getByRole("button", { name: /Start and step away/ }),
+      screen.getByRole("button", { name: /step away/i }),
     ).toBeEnabled();
     expect(
       screen.getByRole("checkbox", { name: "Keep this session awake" }),
@@ -684,7 +707,7 @@ describe("Break Relay", () => {
       screen.getByRole("checkbox", { name: "Keep this session awake" }),
     );
     await user.click(
-      screen.getByRole("button", { name: /Start and step away/ }),
+      screen.getByRole("button", { name: /step away/i }),
     );
 
     await waitFor(() => expect(request).toHaveBeenCalledWith("screen"));
@@ -719,15 +742,20 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: true },
+        capabilitySnapshot: verifiedSnapshot(true),
         hasOnboarded: true,
       }),
     );
 
     render(<App />);
-    expect(screen.getByText("Spoken + visible cues")).toBeVisible();
+    expect(
+      screen.getByText("Verified offline chime + visible cues"),
+    ).toBeVisible();
+    expect(screen.getByText("Voice enhancement verified")).toBeVisible();
     expect(screen.getByText("Keep dim display awake")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+    await user.click(
+      screen.getByRole("button", { name: /Begin .*break/ }),
+    );
 
     expect(
       screen.queryByRole("heading", {
@@ -769,7 +797,7 @@ describe("Break Relay", () => {
         audioEnabled: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -851,13 +879,15 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
 
     render(<App />);
-    expect(screen.getByText("Visible cues + vibration")).toBeVisible();
+    expect(
+      screen.getByText("Verified offline chime + visible cues"),
+    ).toBeVisible();
     await user.click(
       screen.getByRole("button", { name: "Review or change" }),
     );
@@ -874,7 +904,7 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: "Test voice (optional)" }),
     );
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
-    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+    await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(2);
     expect(
@@ -885,7 +915,7 @@ describe("Break Relay", () => {
     ).toMatchObject({ audioEnabled: true, status: "active" });
   });
 
-  it("keeps a denied wake request in-session and requires review next time", async () => {
+  it("blocks departure when wake is denied, then allows an explicit no-wake launch", async () => {
     const user = userEvent.setup();
     const request = vi.fn().mockRejectedValue(new Error("NotAllowedError"));
     Object.defineProperty(navigator, "wakeLock", {
@@ -904,7 +934,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: true },
+        capabilitySnapshot: verifiedSnapshot(true),
         hasOnboarded: true,
       }),
     );
@@ -912,24 +942,29 @@ describe("Break Relay", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Begin my break" }));
 
-    expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
     await waitFor(() =>
       expect(
-        screen.getByText(/device declined the wake request/i),
+        screen.getByText(/Screen wake was not granted/i),
       ).toBeVisible(),
     );
-    await waitFor(() =>
-      expect(
-        JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
-      ).toMatchObject({
-        status: "active",
-        wakeLockFailed: true,
-        keepAwake: true,
-      }),
-    );
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(
       JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").launchNeedsReview,
     ).toBe(true);
+    await user.click(
+      screen.getByRole("checkbox", { name: "Keep this session awake" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /step away/i }),
+    );
+    expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
+    expect(
+      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({
+      status: "active",
+      wakeLockFailed: false,
+      keepAwake: false,
+    });
   });
 
   it("allows intentional first-use launch without a disposable sample", async () => {
@@ -943,7 +978,7 @@ describe("Break Relay", () => {
 
     expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
     expect(screen.getByText(/No sample is required/i)).toBeVisible();
-    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+    await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
     const utterance = vi.mocked(window.speechSynthesis.speak).mock
@@ -968,7 +1003,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -986,7 +1021,7 @@ describe("Break Relay", () => {
 
     expect(screen.getByText("VISUAL CUES ONLY")).toBeVisible();
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
-    await user.click(screen.getByRole("button", { name: /Start and step away/ }));
+    await user.click(screen.getByRole("button", { name: /step away/i }));
     expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
     expect(
       JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
@@ -1014,7 +1049,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -1022,24 +1057,90 @@ describe("Break Relay", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Begin my break" }));
 
-    expect(screen.getByText(/Audio isn’t available here/i)).toBeVisible();
-    expect(screen.getByText(/route and clock are unchanged/i)).toBeVisible();
+    expect(screen.getByText(/Voice did not start/i)).toBeVisible();
+    expect(
+      screen.getByText(/independent chime and visible cue remain active/i),
+    ).toBeVisible();
     const failedSession = JSON.parse(
       localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
     );
     expect(failedSession).toMatchObject({
       status: "active",
       currentStepIndex: 0,
-      cueDeliveryFailed: true,
+      cueDeliveryFailed: false,
+      speechDeliveryFailed: true,
       audioEnabled: false,
       lastAnnouncedStepId: failedSession.route[0].id,
     });
     expect(
-      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").launchNeedsReview,
-    ).toBe(true);
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").audioEnabled,
+    ).toBe(false);
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Repeat cue" }));
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops before departure when chime playback rejects and offers an exact visual-only fallback", async () => {
+    const user = userEvent.setup();
+    class BlockedAudio extends EventTarget {
+      preload = "";
+      volume = 1;
+      constructor(public src: string) {
+        super();
+      }
+      async play() {
+        throw new DOMException("blocked", "NotAllowedError");
+      }
+    }
+    Object.defineProperty(window, "Audio", {
+      configurable: true,
+      value: BlockedAudio,
+    });
+    Object.defineProperty(globalThis, "Audio", {
+      configurable: true,
+      value: BlockedAudio,
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_PREFERENCES,
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "noise",
+        duration: 5,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: verifiedSnapshot(),
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    await user.click(
+      screen.getByRole("button", { name: /Begin .*break/ }),
+    );
+
+    expect(await screen.findByText("The chime did not start.")).toBeVisible();
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    expect(screen.getByText("Local return time")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    ).toBeEnabled();
+
+    await user.click(
+      screen.getByRole("checkbox", { name: "Use offline sound cues" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Start visual-only relay" }),
+    );
+
+    expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
+    expect(
+      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({
+      cueSoundEnabled: false,
+      cueDeliveryFailed: false,
+      status: "active",
+    });
     expect(navigator.vibrate).toHaveBeenCalled();
   });
 
@@ -1057,7 +1158,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: true,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -1095,6 +1196,14 @@ describe("Break Relay", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Begin my break" }));
 
+    expect(
+      screen.getByRole("heading", {
+        name: "Set a boundary this browser can keep.",
+      }),
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: /step away/i }),
+    );
     expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
     const migrated = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
     expect(migrated.spaces).toEqual([
@@ -1135,7 +1244,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -1190,7 +1299,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );
@@ -1251,7 +1360,7 @@ describe("Break Relay", () => {
         alwaysReviewLaunch: false,
         launchSetupComplete: true,
         launchNeedsReview: false,
-        capabilitySnapshot: { speech: true, wakeLock: false },
+        capabilitySnapshot: verifiedSnapshot(),
         hasOnboarded: true,
       }),
     );

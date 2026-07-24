@@ -244,7 +244,9 @@ describe("account-free device handoff", () => {
         name: "One prepared break. Start it here?",
       }),
     ).toBeVisible();
-    expect(screen.getByText("Visible cues only")).toBeVisible();
+    expect(
+      screen.getByText("Offline chime + visible cues"),
+    ).toBeVisible();
     expect(screen.getByText("Normal screen sleep")).toBeVisible();
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(
@@ -254,7 +256,7 @@ describe("account-free device handoff", () => {
     ).not.toBeInTheDocument();
 
     await user.click(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     );
 
     const active = JSON.parse(
@@ -272,7 +274,7 @@ describe("account-free device handoff", () => {
     expect(
       screen.getByRole("button", { name: "Place unavailable" }),
     ).toBeVisible();
-    expect(navigator.vibrate).toHaveBeenCalled();
+    expect(active.cueSoundEnabled).toBe(true);
 
     await user.click(screen.getByRole("button", { name: "End early" }));
     expect(
@@ -299,19 +301,32 @@ describe("account-free device handoff", () => {
 
   it("preserves an already-configured receiver’s spaces, preferences, and learning through completion", async () => {
     const user = userEvent.setup();
-    const receiverPreferences = configuredPreferences({
-      id: "receiver-space",
-      name: "My own office",
-      spaceMode: "seated",
-      stations: [
-        stationForSpace(
-          STATION_PRESETS.find(
-            (station) => station.id === "turned-chair",
-          )!,
-          "receiver-space",
-          [],
-        ),
-      ],
+    const receiverPreferences = {
+      ...configuredPreferences({
+        id: "receiver-space",
+        name: "My own office",
+        spaceMode: "seated",
+        stations: [
+          stationForSpace(
+            STATION_PRESETS.find(
+              (station) => station.id === "turned-chair",
+            )!,
+            "receiver-space",
+            [],
+          ),
+        ],
+      }),
+      cueSoundEnabled: false,
+      keepAwake: true,
+    };
+    const release = vi.fn().mockResolvedValue(undefined);
+    const request = vi.fn().mockResolvedValue({
+      release,
+      addEventListener: vi.fn(),
+    });
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: { request },
     });
     const preferenceSnapshot = JSON.stringify(receiverPreferences);
     const memorySnapshot = JSON.stringify({ version: 2, entries: [] });
@@ -320,9 +335,23 @@ describe("account-free device handoff", () => {
     openHandoff(preparedHandoff());
 
     render(<App />);
+    expect(screen.getByText("Visual-only cues")).toBeVisible();
+    expect(
+      screen.getByRole("checkbox", {
+        name: "Keep this received session awake",
+      }),
+    ).toBeChecked();
     await user.click(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     );
+    await waitFor(() => expect(request).toHaveBeenCalledWith("screen"));
+    expect(
+      JSON.parse(localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({
+      source: "handoff",
+      cueSoundEnabled: false,
+      keepAwake: true,
+    });
     await user.click(screen.getByRole("button", { name: "End early" }));
     await user.click(
       screen.getByRole("button", {
@@ -345,7 +374,7 @@ describe("account-free device handoff", () => {
     openHandoff(preparedHandoff());
     render(<App />);
     expect(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     ).toBeVisible();
 
     const localSpace = relaySpace();
@@ -361,7 +390,7 @@ describe("account-free device handoff", () => {
     vi.clearAllMocks();
 
     await user.click(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     );
 
     expect(
@@ -380,7 +409,7 @@ describe("account-free device handoff", () => {
     openHandoff(preparedHandoff());
     const firstView = render(<App />);
     await user.click(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     );
     await user.click(screen.getByRole("button", { name: "Pause" }));
     firstView.unmount();
@@ -435,7 +464,7 @@ describe("account-free device handoff", () => {
     openHandoff(preparedHandoff());
     const firstView = render(<App />);
     await user.click(
-      screen.getByRole("button", { name: "Start on this device" }),
+      screen.getByRole("button", { name: /start on this device/i }),
     );
     const active = JSON.parse(
       localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",

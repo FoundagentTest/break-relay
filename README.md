@@ -51,6 +51,11 @@ receiver previews and explicitly starts with its own device capabilities.
 Transferred spaces remain ephemeral and do not alter receiver setup or route
 learning. See [docs/device-handoff.md](docs/device-handoff.md).
 
+Cue delivery uses a verified, device-local offline chime baseline; speech is an
+optional enhancement, screen wake is acquired before departure, and exact-time
+fallback copy stays honest about browser limits. See
+[docs/cue-readiness.md](docs/cue-readiness.md).
+
 Route composition uses distinct move, arrival, quiet, and return phases. Longer
 boundaries add quiet at one suitable place instead of padding quick actions or
 inventing extra travel; see [docs/route-composition.md](docs/route-composition.md).

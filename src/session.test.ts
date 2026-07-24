@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
   createSession,
+  markFinalCueIssued,
   markCueAnnounced,
   pauseSession,
   reconcileSession,
   remainingMs,
   resumeSession,
   shouldAnnounceCue,
+  shouldIssueFinalCue,
   skipStep,
+  replaceWithExtension,
 } from "./session";
 import { buildRoute, STATION_PRESETS } from "./data";
 import { loadSession, SESSION_STORAGE_KEY } from "./storage";
@@ -51,6 +54,55 @@ describe("wall-clock relay reconciliation", () => {
     expect(announced.lastAnnouncedStepId).toBe("step-2");
   });
 
+  it("records each reached cue and the final return signal at most once", () => {
+    const first = markCueAnnounced(
+      createSession({
+        route: route(),
+        durationMinutes: 1,
+        audioEnabled: false,
+        keepAwake: false,
+        now: 1_000,
+        id: "once-only",
+      }),
+      1_000,
+    );
+    const caughtUp = reconcileSession(first, 26_000);
+    const current = markCueAnnounced(caughtUp, 26_000);
+    const repeated = markCueAnnounced(current, 27_000);
+    const complete = reconcileSession(repeated, 31_000);
+    const final = markFinalCueIssued(complete, 31_000);
+
+    expect(repeated.announcedCueIds).toEqual(["step-0", "step-2"]);
+    expect(shouldAnnounceCue(repeated)).toBe(false);
+    expect(shouldIssueFinalCue(complete)).toBe(true);
+    expect(shouldIssueFinalCue(final)).toBe(false);
+    expect(markFinalCueIssued(final, 32_000)).toBe(final);
+    expect(final.announcedCueIds).toEqual([
+      "step-0",
+      "step-2",
+      "__complete__",
+    ]);
+  });
+
+  it("keeps the first absolute deadline as extension provenance", () => {
+    const started = createSession({
+      route: route(),
+      durationMinutes: 1,
+      audioEnabled: false,
+      keepAwake: false,
+      now: 1_000,
+      id: "extension-origin",
+    });
+    const extended = replaceWithExtension(
+      reconcileSession(started, started.deadlineAt),
+      [{ ...route()[0], id: "extension", phase: "extension" }],
+      started.deadlineAt,
+    );
+
+    expect(extended.originalDeadlineAt).toBe(started.deadlineAt);
+    expect(extended.deadlineAt).toBeGreaterThan(started.deadlineAt);
+  });
+
   it("completes an elapsed relay at its deadline instead of inventing time", () => {
     const started = createSession({
       route: route(),
@@ -85,7 +137,7 @@ describe("wall-clock relay reconciliation", () => {
     expect(latePause.completedAt).toBe(31_000);
   });
 
-  it("freezes both step and overall deadlines while paused", () => {
+  it("pauses cues without moving the absolute return deadline", () => {
     const started = createSession({
       route: route(),
       durationMinutes: 1,
@@ -98,10 +150,10 @@ describe("wall-clock relay reconciliation", () => {
     const stillPaused = reconcileSession(paused, 114_000);
     const resumed = resumeSession(stillPaused, 114_000);
 
-    expect(stillPaused.currentStepIndex).toBe(0);
-    expect(remainingMs(stillPaused, 114_000)).toBe(26_000);
-    expect(resumed.stepDeadlineAt).toBe(120_000);
-    expect(resumed.deadlineAt).toBe(140_000);
+    expect(stillPaused.status).toBe("complete");
+    expect(remainingMs(stillPaused, 114_000)).toBe(0);
+    expect(resumed.deadlineAt).toBe(40_000);
+    expect(resumed.status).toBe("complete");
     expect(resumed.paused).toBe(false);
   });
 
@@ -142,8 +194,8 @@ describe("wall-clock relay reconciliation", () => {
 
     expect(skipped.pausedAt).toBe(4_000);
     expect(skipped.stepDeadlineAt).toBe(14_000);
-    expect(resumed.stepDeadlineAt).toBe(28_000);
-    expect(resumed.deadlineAt).toBe(45_000);
+    expect(resumed.currentStepIndex).toBe(2);
+    expect(resumed.deadlineAt).toBe(31_000);
   });
 
   it("migrates a version-one active relay without losing recovery", () => {
