@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
@@ -12,6 +12,7 @@ import {
 
 const availableSpeech = window.speechSynthesis;
 const availableUtterance = window.SpeechSynthesisUtterance;
+const availableWakeLock = Object.getOwnPropertyDescriptor(navigator, "wakeLock");
 
 describe("Break Relay", () => {
   beforeEach(() => {
@@ -28,6 +29,11 @@ describe("Break Relay", () => {
       configurable: true,
       value: availableUtterance,
     });
+    if (availableWakeLock) {
+      Object.defineProperty(navigator, "wakeLock", availableWakeLock);
+    } else {
+      Reflect.deleteProperty(navigator, "wakeLock");
+    }
   });
 
   it("covers setup, tailored launch, in-session controls, extension, and return", async () => {
@@ -303,6 +309,48 @@ describe("Break Relay", () => {
     expect(
       screen.getByRole("checkbox", { name: "Keep this session awake" }),
     ).toBeDisabled();
+  });
+
+  it("requests wake only when opted in and releases it on pause and unmount", async () => {
+    const user = userEvent.setup();
+    const release = vi.fn().mockResolvedValue(undefined);
+    const request = vi.fn().mockImplementation(async () => ({
+      release,
+      addEventListener: vi.fn(),
+    }));
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: { request },
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "stiff",
+        duration: 5,
+        spaceMode: "any",
+        audioEnabled: false,
+        hasOnboarded: true,
+      }),
+    );
+
+    const view = render(<App />);
+    await user.click(screen.getByRole("button", { name: /Begin my break/ }));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Keep this session awake" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Start and step away/ }),
+    );
+
+    await waitFor(() => expect(request).toHaveBeenCalledWith("screen"));
+    expect(document.querySelector(".session-page")).toHaveClass("is-dim-awake");
+    await user.click(screen.getByRole("button", { name: "Pause" }));
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    view.unmount();
+    await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
   });
 });
 

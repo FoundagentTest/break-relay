@@ -9,6 +9,14 @@ function routeDurationMs(route: RouteStep[]) {
   );
 }
 
+function createSessionId(now: number) {
+  const browserCrypto = globalThis.crypto;
+  if (browserCrypto && typeof browserCrypto.randomUUID === "function") {
+    return browserCrypto.randomUUID();
+  }
+  return `relay-${now}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export function createSession({
   route,
   durationMinutes,
@@ -16,7 +24,7 @@ export function createSession({
   keepAwake,
   extensionUsed = false,
   now = Date.now(),
-  id = globalThis.crypto?.randomUUID?.() ?? `relay-${now}`,
+  id,
 }: {
   route: RouteStep[];
   durationMinutes: number;
@@ -30,7 +38,7 @@ export function createSession({
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
     version: 1,
-    id,
+    id: id ?? createSessionId(now),
     route,
     startedAt: now,
     stepDeadlineAt: now + firstStepMs,
