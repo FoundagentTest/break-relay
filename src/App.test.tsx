@@ -43,7 +43,7 @@ describe("Break Relay", () => {
 
     expect(
       screen.getByRole("heading", {
-        name: "Mark three places that can carry a break.",
+        name: "Mark the places that can carry a break.",
       }),
     ).toBeInTheDocument();
 
@@ -51,7 +51,7 @@ describe("Break Relay", () => {
     await user.click(screen.getByRole("button", { name: /Water stop/ }));
     await user.click(screen.getByRole("button", { name: /Doorway/ }));
 
-    expect(screen.getByText("3 / 3 minimum")).toBeInTheDocument();
+    expect(screen.getByText("3 active now")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: /Shape my relay/ }));
 
     expect(
@@ -76,7 +76,12 @@ describe("Break Relay", () => {
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Repeat cue" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Skip phase" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Place unavailable" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Skip this cue" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "End early" })).toBeInTheDocument();
     expect(screen.getByText(/About 5 min remain/)).toBeInTheDocument();
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
@@ -86,24 +91,11 @@ describe("Break Relay", () => {
     expect(screen.getByText("Relay paused")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Resume" }));
 
-    for (let index = 0; index < 4; index += 1) {
-      await user.click(screen.getByRole("button", { name: "Skip phase" }));
-    }
-
-    expect(
-      screen.getByRole("heading", { name: "You’re back at the boundary." }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Add two quiet minutes/ }),
-    ).toBeInTheDocument();
-
     await user.click(
-      screen.getByRole("button", { name: /Add two quiet minutes/ }),
+      screen.getByRole("button", { name: "Skip this cue" }),
     );
-    expect(
-      screen.getByRole("heading", { name: "Two quiet minutes" }),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Skip phase" }));
+    expect(screen.getByText("ARRIVE & DO")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "End early" }));
 
     expect(
       screen.queryByRole("button", { name: /Add two quiet minutes/ }),
@@ -131,14 +123,15 @@ describe("Break Relay", () => {
     expect(routeMemory.entries).toHaveLength(1);
     expect(routeMemory.entries[0]).toMatchObject({
       outcome: "useful",
-      extensionUsed: true,
+      extensionUsed: false,
+      endedEarly: true,
       feeling: "eyes",
       durationMinutes: 5,
       spaceMode: "any",
     });
   });
 
-  it("removes incompatible places when switching to low movement and launches safely", async () => {
+  it("keeps incompatible saved places when switching to low movement and launches safely", async () => {
     const user = userEvent.setup();
     render(<App />);
 
@@ -147,13 +140,13 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("button", { name: /Outside step/ }),
     );
-    expect(screen.getByText("3 / 3 minimum")).toBeVisible();
+    expect(screen.getByText("3 active now")).toBeVisible();
 
     await user.click(screen.getByText("Low movement", { exact: true }));
 
-    expect(screen.getByText("0 / 3 minimum")).toBeVisible();
+    expect(screen.getByText("0 active now")).toBeVisible();
     expect(
-      screen.getByText(/3 places were removed because they are not available/i),
+      screen.getByText(/3 saved places are inactive in this mode, but still stored/i),
     ).toBeVisible();
     expect(
       screen.getByRole("button", { name: /Shape my relay/ }),
@@ -161,11 +154,9 @@ describe("Break Relay", () => {
     const selectedRoute = screen.getByRole("complementary", {
       name: "Your selected route",
     });
-    expect(within(selectedRoute).queryByText("Doorway")).not.toBeInTheDocument();
-    expect(within(selectedRoute).queryByText("Hallway")).not.toBeInTheDocument();
     expect(
-      within(selectedRoute).queryByText("Outside step"),
-    ).not.toBeInTheDocument();
+      within(selectedRoute).getByText(/Doorway, Hallway, Outside step/),
+    ).toBeVisible();
 
     await user.click(
       screen.getByRole("button", { name: /Window or view/ }),
@@ -201,9 +192,12 @@ describe("Break Relay", () => {
             phase.station.modes.includes("seated"),
         ),
     ).toBe(true);
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+    ).toHaveLength(6);
   });
 
-  it("repairs legacy saved preferences with no stations safe for their movement mode", async () => {
+  it("keeps legacy places and offers a no-travel launch when none match the mode", () => {
     localStorage.setItem(
       STORAGE_KEY,
       JSON.stringify({
@@ -223,20 +217,13 @@ describe("Break Relay", () => {
 
     render(<App />);
 
+    expect(screen.getByText("0 / 0")).toBeVisible();
     expect(
-      screen.getByRole("heading", {
-        name: "Mark three places that can carry a break.",
-      }),
-    ).toBeVisible();
-    expect(screen.getByText("0 / 3 minimum")).toBeVisible();
+      screen.getByRole("button", { name: "Begin a no-travel break" }),
+    ).toBeEnabled();
     expect(
-      screen.getByRole("button", { name: /Shape my relay/ }),
-    ).toBeDisabled();
-    await waitFor(() =>
-      expect(
-        JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
-      ).toEqual([]),
-    );
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+    ).toHaveLength(3);
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
   });
 
@@ -282,7 +269,7 @@ describe("Break Relay", () => {
 
     expect(
       screen.getByRole("heading", {
-        name: "Mark three places that can carry a break.",
+        name: "Mark the places that can carry a break.",
       }),
     ).toBeInTheDocument();
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
@@ -1016,6 +1003,125 @@ describe("Break Relay", () => {
     });
     expect(JSON.parse(localStorage.getItem(ROUTE_MEMORY_STORAGE_KEY) ?? "{}"))
       .toEqual(history);
+  });
+
+  it("applies quick availability to one break and restores the saved defaults afterward", async () => {
+    const user = userEvent.setup();
+    const stations = [
+      STATION_PRESETS.find((station) => station.id === "window"),
+      STATION_PRESETS.find((station) => station.id === "plant"),
+      STATION_PRESETS.find((station) => station.id === "quiet-corner"),
+    ];
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations,
+        feeling: "eyes",
+        duration: 5,
+        spaceMode: "any",
+        audioEnabled: false,
+        keepAwake: false,
+        alwaysReviewLaunch: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: { speech: true, wakeLock: false },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    await user.click(
+      screen.getByRole("button", { name: /Places available now/ }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /Window or view/ }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", { name: /Quiet corner/ }),
+    );
+    expect(screen.getByText("1 / 3")).toBeVisible();
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+    ).toHaveLength(3);
+
+    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+    const active = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(active.eligibleStations).toHaveLength(1);
+    expect(active.route[0].station.id).toBe("plant");
+
+    await user.click(screen.getByRole("button", { name: "End early" }));
+    await user.click(
+      screen.getByRole("button", { name: "Leave without rating" }),
+    );
+    expect(
+      screen.getByRole("button", { name: /Places available now 3 \/ 3/ }),
+    ).toBeVisible();
+  });
+
+  it("reroutes each rejected destination once, announces only the replacement, and ends in a bounded pause", async () => {
+    const user = userEvent.setup();
+    const stations = [
+      STATION_PRESETS.find((station) => station.id === "window"),
+      STATION_PRESETS.find((station) => station.id === "plant"),
+      STATION_PRESETS.find((station) => station.id === "quiet-corner"),
+    ];
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations,
+        feeling: "noise",
+        duration: 7,
+        spaceMode: "any",
+        audioEnabled: true,
+        keepAwake: false,
+        alwaysReviewLaunch: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: { speech: true, wakeLock: false },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+    const original = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+
+    for (let revision = 1; revision <= 3; revision += 1) {
+      await user.click(
+        screen.getByRole("button", { name: "Place unavailable" }),
+      );
+      expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(
+        revision + 1,
+      );
+    }
+
+    expect(
+      screen.getByRole("heading", { name: "Comfortable pause" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Place unavailable" }),
+    ).not.toBeInTheDocument();
+    const rerouted = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(rerouted).toMatchObject({
+      id: original.id,
+      deadlineAt: original.deadlineAt,
+      rerouteCount: 3,
+    });
+    expect(new Set(rerouted.unavailableStationIds).size).toBe(3);
+
+    await user.click(screen.getByRole("button", { name: "End early" }));
+    const finished = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(finished.eligibleStations).toEqual([]);
+    expect(finished.unavailableStationIds).toEqual([]);
   });
 });
 

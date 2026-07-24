@@ -6,7 +6,10 @@ import {
   useState,
 } from "react";
 import {
+  availableStations,
   buildExtension,
+  buildNoTravelRoute,
+  buildReplacementRoute,
   buildRoute,
   DEFAULT_PREFERENCES,
   FEELINGS,
@@ -21,6 +24,7 @@ import {
   markCueAnnounced,
   pauseSession,
   reconcileSession,
+  recomposeSession,
   remainingMs,
   replaceWithExtension,
   resumeSession,
@@ -260,24 +264,27 @@ function StationSetup({
     [draft.spaceMode, draft.stations],
   );
   const selectedIds = new Set(safeStations.map((station) => station.id));
+  const inactiveStations = draft.stations.filter(
+    (station) => !station.modes.includes(draft.spaceMode),
+  );
+  const canContinue = editing
+    ? draft.stations.length > 0
+    : safeStations.length >= 1;
 
   function changeSpaceMode(spaceMode: SpaceMode) {
     const compatible = stationsForSpaceMode(draft.stations, spaceMode);
-    const removed = draft.stations.length - compatible.length;
+    const inactive = draft.stations.length - compatible.length;
     setCustomError("");
     setModeNotice(
-      removed > 0
-        ? `${removed} ${
-            removed === 1 ? "place was" : "places were"
-          } removed because ${
-            removed === 1 ? "it is" : "they are"
-          } not available in this movement mode. Choose safe replacements to continue.`
-        : "",
+      inactive > 0
+        ? `${inactive} saved ${
+            inactive === 1 ? "place is" : "places are"
+          } inactive in this mode, but still stored for when the context changes.`
+        : "Every saved place is active in this movement mode.",
     );
     onDraftChange({
       ...draft,
       spaceMode,
-      stations: compatible,
     });
   }
 
@@ -285,12 +292,12 @@ function StationSetup({
     if (selectedIds.has(station.id)) {
       onDraftChange({
         ...draft,
-        stations: safeStations.filter((item) => item.id !== station.id),
+        stations: draft.stations.filter((item) => item.id !== station.id),
       });
       return;
     }
-    if (safeStations.length >= 6) return;
-    onDraftChange({ ...draft, stations: [...safeStations, station] });
+    if (draft.stations.length >= 12) return;
+    onDraftChange({ ...draft, stations: [...draft.stations, station] });
   }
 
   function addCustom(event: React.FormEvent) {
@@ -301,8 +308,8 @@ function StationSetup({
       customInput.current?.focus();
       return;
     }
-    if (safeStations.length >= 6) {
-      setCustomError("Six stops is plenty for a useful relay.");
+    if (draft.stations.length >= 12) {
+      setCustomError("Twelve saved places is the local limit.");
       return;
     }
     const station: Station = {
@@ -318,7 +325,7 @@ function StationSetup({
             : ["any"],
       custom: true,
     };
-    onDraftChange({ ...draft, stations: [...safeStations, station] });
+    onDraftChange({ ...draft, stations: [...draft.stations, station] });
     setCustomName("");
     setCustomError("");
   }
@@ -338,7 +345,7 @@ function StationSetup({
         <section className="setup-intro">
           <div>
             <p className="eyebrow">{editing ? "EDIT YOUR ROUTE" : "SETUP · ABOUT ONE MINUTE"}</p>
-            <h1>Mark three places that can carry a break.</h1>
+            <h1>Mark the places that can carry a break.</h1>
             <p className="lede">
               Choose spots you can safely reach right now. A turn away from the
               desk counts; a long walk is not required.
@@ -362,10 +369,13 @@ function StationSetup({
             <div className="field-heading">
               <div>
                 <h2>Choose your relay points</h2>
-                <p>Pick 3–6. You can change these any time.</p>
+                <p>
+                  Choose at least one. Three or more gives Relay more safe
+                  replacement choices.
+                </p>
               </div>
               <span className="count-pill" aria-live="polite">
-                {safeStations.length} / 3 minimum
+                {safeStations.length} active now
               </span>
             </div>
 
@@ -376,7 +386,7 @@ function StationSetup({
                   <button
                     aria-pressed={selected}
                     className={`station-option ${selected ? "is-selected" : ""}`}
-                    disabled={!selected && safeStations.length >= 6}
+                    disabled={!selected && draft.stations.length >= 12}
                     key={station.id}
                     onClick={() => toggleStation(station)}
                     type="button"
@@ -466,19 +476,28 @@ function StationSetup({
                 asks you to push through pain.
               </p>
             </div>
+            {inactiveStations.length > 0 && (
+              <div className="inactive-stations" role="status">
+                <strong>
+                  Stored for other movement modes · {inactiveStations.length}
+                </strong>
+                <span>
+                  {inactiveStations.map((station) => station.name).join(", ")}
+                </span>
+              </div>
+            )}
             <button
               className="primary-button primary-button--wide"
-              disabled={safeStations.length < 3}
+              disabled={!canContinue}
               onClick={onContinue}
               type="button"
             >
               {editing ? "Save relay points" : "Shape my relay"}
               <Icon name="arrow" />
             </button>
-            {safeStations.length < 3 && (
+            {!editing && safeStations.length === 0 && (
               <p className="button-hint">
-                Choose {3 - safeStations.length} more{" "}
-                {3 - safeStations.length === 1 ? "stop" : "stops"} to continue.
+                Choose one safe stop to continue.
               </p>
             )}
           </aside>
@@ -1016,21 +1035,46 @@ function AppHeader({ onSettings }: { onSettings: () => void }) {
 
 function Home({
   preferences,
+  unavailableNow,
+  onAvailabilityChange,
   onChange,
   onReview,
   onStart,
   onSettings,
 }: {
   preferences: Preferences;
+  unavailableNow: string[];
+  onAvailabilityChange: (stationIds: string[]) => void;
   onChange: (preferences: Preferences) => void;
   onReview: () => void;
   onStart: () => void;
   onSettings: () => void;
 }) {
+  const [availabilityOpen, setAvailabilityOpen] = useState(false);
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
   const capabilities = getRelayCapabilities();
   const spokenMode = preferences.audioEnabled && capabilities.speech;
   const awakeMode = preferences.keepAwake && capabilities.wakeLock;
+  const compatibleStations = stationsForSpaceMode(
+    preferences.stations,
+    preferences.spaceMode,
+  );
+  const activeStations = availableStations(
+    preferences.stations,
+    preferences.spaceMode,
+    unavailableNow,
+  );
+  const incompatibleCount =
+    preferences.stations.length - compatibleStations.length;
+
+  function toggleAvailability(stationId: string) {
+    onAvailabilityChange(
+      unavailableNow.includes(stationId)
+        ? unavailableNow.filter((id) => id !== stationId)
+        : [...unavailableNow, stationId],
+    );
+  }
+
   return (
     <main className="home-page">
       <AppHeader onSettings={onSettings} />
@@ -1067,19 +1111,90 @@ function Home({
               <span>minute relay</span>
             </div>
             <p className="ready-description">
-              One sparse route drawn from {preferences.stations.length} saved
-              places, with a quiet middle and a clear invitation back.
+              {activeStations.length > 0
+                ? `One sparse route drawn from ${activeStations.length} ${
+                    activeStations.length === 1 ? "place" : "places"
+                  } available now, with a clear invitation back.`
+                : "No travel is required. This relay will use a comfortable turn-away pause and a clear return cue."}
             </p>
+            <button
+              aria-controls="availability-now"
+              aria-expanded={availabilityOpen}
+              className="availability-toggle"
+              onClick={() => setAvailabilityOpen((open) => !open)}
+              type="button"
+            >
+              <span>
+                <Icon name="check" size={17} />
+                Places available now
+              </span>
+              <strong>
+                {activeStations.length} / {compatibleStations.length}
+              </strong>
+            </button>
+            {availabilityOpen && (
+              <div className="availability-panel" id="availability-now">
+                <div>
+                  <p>
+                    Optional for this break only. Saved places are not changed.
+                  </p>
+                  {unavailableNow.length > 0 && (
+                    <button
+                      className="inline-button"
+                      onClick={() => onAvailabilityChange([])}
+                      type="button"
+                    >
+                      Make all compatible places available
+                    </button>
+                  )}
+                </div>
+                {compatibleStations.map((station) => (
+                  <label key={station.id}>
+                    <input
+                      checked={!unavailableNow.includes(station.id)}
+                      onChange={() => toggleAvailability(station.id)}
+                      type="checkbox"
+                    />
+                    <span aria-hidden="true">
+                      {!unavailableNow.includes(station.id) && (
+                        <Icon name="check" size={14} />
+                      )}
+                    </span>
+                    <span>
+                      <strong>{station.name}</strong>
+                      <small>
+                        {unavailableNow.includes(station.id)
+                          ? "Unavailable for this break"
+                          : "Available for this break"}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+                {compatibleStations.length === 0 && (
+                  <p className="availability-empty">
+                    Your saved places are inactive in this movement mode. You
+                    can still begin a no-travel break or edit your saved map.
+                  </p>
+                )}
+                {incompatibleCount > 0 && (
+                  <p className="availability-inactive">
+                    {incompatibleCount} saved{" "}
+                    {incompatibleCount === 1 ? "place is" : "places are"} safely
+                    inactive in this movement mode.
+                  </p>
+                )}
+              </div>
+            )}
             <ol className="ready-route" aria-label="Saved relay points">
-              {preferences.stations.slice(0, 4).map((station, index) => (
+              {activeStations.slice(0, 4).map((station, index) => (
                 <li key={station.id}>
                   <span>{index + 1}</span>
                   {station.name}
                 </li>
               ))}
-              {preferences.stations.length > 4 && (
+              {activeStations.length > 4 && (
                 <li className="ready-route__more">
-                  +{preferences.stations.length - 4} in rotation
+                  +{activeStations.length - 4} in rotation
                 </li>
               )}
             </ol>
@@ -1091,7 +1206,9 @@ function Home({
               <span className="start-button__play">
                 <Icon name="play" size={17} />
               </span>
-              Begin my break
+              {activeStations.length > 0
+                ? "Begin my break"
+                : "Begin a no-travel break"}
             </button>
             <div className="launch-summary" aria-label="Current screen-away mode">
               <div>
@@ -1220,15 +1337,32 @@ function SettingsPanel({
             </button>
           </div>
           <ol className="panel-stations">
-            {preferences.stations.map((station, index) => (
-              <li key={station.id}>
-                <span>{index + 1}</span>
-                <div>
-                  <strong>{station.name}</strong>
-                  <small>{station.detail}</small>
-                </div>
-              </li>
-            ))}
+            {preferences.stations.map((station, index) => {
+              const active = station.modes.includes(
+                preferences.spaceMode,
+              );
+              return (
+                <li
+                  className={active ? "" : "is-inactive"}
+                  key={station.id}
+                >
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{station.name}</strong>
+                    <small>
+                      {active
+                        ? station.detail
+                        : `Stored · inactive for ${
+                            SPACE_MODES.find(
+                              (mode) =>
+                                mode.id === preferences.spaceMode,
+                            )?.label.toLowerCase() ?? "this mode"
+                          }`}
+                    </small>
+                  </div>
+                </li>
+              );
+            })}
           </ol>
         </section>
 
@@ -1503,11 +1637,15 @@ function useWakeLock(enabled: boolean) {
 
 function RelaySession({
   session,
+  fallbackFeeling,
+  fallbackSpaceMode,
   onCapabilityFailure,
   onChange,
   onFinish,
 }: {
   session: ActiveSession;
+  fallbackFeeling: Feeling;
+  fallbackSpaceMode: SpaceMode;
   onCapabilityFailure: (kind: "speech" | "wake") => void;
   onChange: (session: ActiveSession) => void;
   onFinish: (session: ActiveSession) => void;
@@ -1642,11 +1780,45 @@ function RelaySession({
     }
   }
 
-  function skip() {
+  function skipCue() {
     window.speechSynthesis?.cancel?.();
     const next = skipStep(sessionRef.current);
     if (next.status === "complete") finish(next);
     else announce(next);
+  }
+
+  function markPlaceUnavailable() {
+    window.speechSynthesis?.cancel?.();
+    const current = sessionRef.current;
+    const currentStep = current.route[current.currentStepIndex];
+    const rejectedStationId = currentStep.station.id;
+    const excluded = new Set([
+      ...current.unavailableStationIds,
+      rejectedStationId,
+    ]);
+    const alternatives = current.eligibleStations.filter(
+      (station) => !excluded.has(station.id),
+    );
+    const revision = current.rerouteCount + 1;
+    const replacement = buildReplacementRoute(
+      alternatives,
+      current.routeContext?.feeling ?? fallbackFeeling,
+      current.durationMinutes,
+      Math.ceil(remainingMs(current) / 1000),
+      current.startedAt + revision * 7_919,
+      {
+        revision,
+        spaceMode:
+          current.routeContext?.spaceMode ?? fallbackSpaceMode,
+      },
+    );
+    const next = recomposeSession(
+      current,
+      replacement.route,
+      rejectedStationId,
+    );
+    if (next === current) return;
+    announce(next);
   }
 
   function endEarly() {
@@ -1737,12 +1909,33 @@ function RelaySession({
             </span>
             Repeat cue
           </button>
-          <button className="control-button" onClick={skip} type="button">
-            <span>
-              <Icon name="skip" size={20} />
-            </span>
-            Skip phase
-          </button>
+          {["move", "arrive", "quiet"].includes(step.phase) &&
+            step.station.id !== "comfortable-pause" &&
+            step.station.id !== "desk-return" &&
+            session.rerouteCount < session.eligibleStations.length && (
+              <button
+                className="control-button control-button--availability"
+                onClick={markPlaceUnavailable}
+                type="button"
+              >
+                <span>
+                  <Icon name="close" size={20} />
+                </span>
+                Place unavailable
+              </button>
+            )}
+          {step.phase !== "return" && (
+            <button
+              className="control-button"
+              onClick={skipCue}
+              type="button"
+            >
+              <span>
+                <Icon name="skip" size={20} />
+              </span>
+              Skip this cue
+            </button>
+          )}
         </div>
         {session.keepAwake && (
           <p className={`wake-status wake-status--${wakeStatus}`} role="status">
@@ -1875,7 +2068,7 @@ export default function App() {
       ? recovered.status === "complete"
         ? "complete"
         : "recover"
-      : initial.hasOnboarded && initial.stations.length >= 3
+      : initial.hasOnboarded
         ? "home"
         : "stations",
   );
@@ -1883,6 +2076,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [session, setSession] = useState<ActiveSession | null>(recovered);
   const [routeMemory, setRouteMemory] = useState(initialRouteMemory);
+  const [unavailableNow, setUnavailableNow] = useState<string[]>([]);
   const [interruptedCompletion, setInterruptedCompletion] = useState(
     recovered?.status === "complete",
   );
@@ -1952,24 +2146,18 @@ export default function App() {
     },
   ) {
     if (launchingRef.current || session?.status === "active") return;
-    const safeStations = stationsForSpaceMode(
+    const compatibleStations = stationsForSpaceMode(
       source.stations,
       source.spaceMode,
     );
-    const preparedSource = {
-      ...source,
-      stations: safeStations,
-    };
-    if (safeStations.length < 3) {
-      if (source.hasOnboarded) updatePreferences(preparedSource);
-      setDraft(preparedSource);
-      setEditing(source.hasOnboarded);
-      setScreen("stations");
-      return;
-    }
+    const activeStations = availableStations(
+      source.stations,
+      source.spaceMode,
+      unavailableNow,
+    );
     launchingRef.current = true;
     const nextPreferences = {
-      ...preparedSource,
+      ...source,
       audioEnabled: options.audioEnabled,
       keepAwake: options.keepAwake,
       alwaysReviewLaunch: options.alwaysReviewLaunch,
@@ -1980,16 +2168,23 @@ export default function App() {
     };
     updatePreferences(nextPreferences);
     setDraft(nextPreferences);
-    const route = buildRoute(
-      nextPreferences.stations,
-      nextPreferences.feeling,
-      nextPreferences.duration,
-      Date.now(),
-      {
-        history: routeMemory.entries,
-        spaceMode: nextPreferences.spaceMode,
-      },
-    );
+    const route =
+      activeStations.length > 0
+        ? buildRoute(
+            activeStations,
+            nextPreferences.feeling,
+            nextPreferences.duration,
+            Date.now(),
+            {
+              history: routeMemory.entries,
+              spaceMode: nextPreferences.spaceMode,
+            },
+          )
+        : buildNoTravelRoute(
+            nextPreferences.feeling,
+            nextPreferences.duration,
+            nextPreferences.spaceMode,
+          );
     let nextSession = createSession({
       route,
       durationMinutes: nextPreferences.duration,
@@ -2012,6 +2207,10 @@ export default function App() {
             action: step.action,
           })),
       },
+      eligibleStations: activeStations,
+      unavailableStationIds: compatibleStations
+        .filter((station) => unavailableNow.includes(station.id))
+        .map((station) => station.id),
     });
     nextSession = markCueAnnounced(nextSession);
     commitSession(nextSession);
@@ -2026,15 +2225,20 @@ export default function App() {
     }
   }
 
-  const finishSession = useCallback((finished: ActiveSession) => {
-    commitSession(finished);
-    setInterruptedCompletion(false);
-    setScreen("complete");
-  }, [commitSession]);
+  const finishSession = useCallback(
+    (finished: ActiveSession) => {
+      commitSession(finished);
+      setUnavailableNow([]);
+      setInterruptedCompletion(false);
+      setScreen("complete");
+    },
+    [commitSession],
+  );
 
   function returnHome() {
     clearSession();
     setSession(null);
+    setUnavailableNow([]);
     launchingRef.current = false;
     setScreen("home");
     setInterruptedCompletion(false);
@@ -2117,6 +2321,7 @@ export default function App() {
           window.speechSynthesis?.cancel?.();
           clearSession();
           setSession(null);
+          setUnavailableNow([]);
           launchingRef.current = false;
           setScreen("home");
         }}
@@ -2148,6 +2353,8 @@ export default function App() {
   if (screen === "session" && session?.status === "active") {
     return (
       <RelaySession
+        fallbackFeeling={preferences.feeling}
+        fallbackSpaceMode={preferences.spaceMode}
         key={session.id}
         onCapabilityFailure={(kind) =>
           flagSessionCapabilityFailure(session.id, kind)
@@ -2185,6 +2392,7 @@ export default function App() {
   return (
     <>
       <Home
+        onAvailabilityChange={setUnavailableNow}
         onChange={updatePreferences}
         onReview={() => openReadiness(preferences, "home")}
         onSettings={() => setSettingsOpen(true)}
@@ -2200,6 +2408,7 @@ export default function App() {
           });
         }}
         preferences={preferences}
+        unavailableNow={unavailableNow}
       />
       {settingsOpen && (
         <SettingsPanel
@@ -2216,6 +2425,7 @@ export default function App() {
           }}
           onEdit={() => {
             setDraft(preferences);
+            setUnavailableNow([]);
             setEditing(true);
             setSettingsOpen(false);
             setScreen("stations");
@@ -2235,6 +2445,7 @@ export default function App() {
             setDraft(DEFAULT_PREFERENCES);
             setRouteMemory({ version: 1, entries: [] });
             setSession(null);
+            setUnavailableNow([]);
             launchingRef.current = false;
             setSettingsOpen(false);
             setEditing(false);

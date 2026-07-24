@@ -223,6 +223,7 @@ export function createRouteHistoryEntry(
   if (sourceSteps.length === 0) return null;
   const skippedIds = new Set(session.skippedStepIds);
   const reachedIds = new Set(session.reachedStepIds);
+  const neutralIds = new Set(session.neutralStepIds);
   return {
     version: 1,
     id: session.id,
@@ -231,7 +232,10 @@ export function createRouteHistoryEntry(
     spaceMode: context?.spaceMode ?? fallback.spaceMode,
     steps: sourceSteps.map((step) => ({
       ...step,
-      used: reachedIds.has(step.stepId) && !skippedIds.has(step.stepId),
+      used:
+        reachedIds.has(step.stepId) &&
+        !skippedIds.has(step.stepId) &&
+        !neutralIds.has(step.stepId),
       skipped: skippedIds.has(step.stepId),
     })),
     extensionUsed: session.extensionUsed,

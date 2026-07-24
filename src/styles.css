@@ -782,6 +782,26 @@ a:focus-visible {
   line-height: 1.5;
 }
 
+.inactive-stations {
+  display: grid;
+  gap: 4px;
+  padding: 13px 15px;
+  margin: -8px 0 18px;
+  border: 1px dashed rgba(21, 55, 50, 0.3);
+  border-radius: var(--radius-sm);
+  color: var(--ink-soft);
+}
+
+.inactive-stations strong {
+  color: var(--ink);
+  font-size: 0.68rem;
+}
+
+.inactive-stations span {
+  font-size: 0.64rem;
+  line-height: 1.45;
+}
+
 .button-hint {
   margin: 10px 0 0;
   color: var(--ink-soft);
@@ -1260,6 +1280,118 @@ a:focus-visible {
   line-height: 1.45;
 }
 
+.availability-toggle {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 15px;
+  border: 1px solid rgba(220, 231, 164, 0.34);
+  border-radius: var(--radius-sm);
+  background: rgba(220, 231, 164, 0.08);
+  color: var(--white);
+  font-size: 0.69rem;
+  font-weight: 700;
+}
+
+.availability-toggle > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.availability-toggle strong {
+  color: var(--lime);
+  font-size: 0.72rem;
+}
+
+.availability-panel {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 13px;
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--radius-sm);
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.availability-panel > div:first-child {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 7px;
+}
+
+.availability-panel p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.61rem;
+  line-height: 1.45;
+}
+
+.availability-panel .inline-button {
+  min-height: 24px;
+  flex: 0 0 auto;
+  color: var(--lime);
+  font-size: 0.58rem;
+}
+
+.availability-panel label {
+  position: relative;
+  display: grid;
+  min-height: 48px;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.06);
+  grid-template-columns: 24px 1fr;
+}
+
+.availability-panel label > input {
+  position: absolute;
+  opacity: 0;
+}
+
+.availability-panel label > span:first-of-type {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 7px;
+  color: var(--lime);
+  place-items: center;
+}
+
+.availability-panel label strong,
+.availability-panel label small {
+  display: block;
+}
+
+.availability-panel label strong {
+  font-size: 0.66rem;
+}
+
+.availability-panel label small {
+  margin-top: 2px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 0.57rem;
+}
+
+.availability-panel .availability-empty,
+.availability-panel .availability-inactive {
+  padding: 5px 3px;
+}
+
+.availability-panel .availability-inactive {
+  color: var(--lime);
+}
+
 .ready-route {
   display: flex;
   flex-wrap: wrap;
@@ -1462,6 +1594,16 @@ a:focus-visible {
   background: var(--mint);
   font-family: "Instrument Serif", Georgia, serif;
   place-items: center;
+}
+
+.panel-stations li.is-inactive {
+  border-style: dashed;
+  background: rgba(232, 231, 220, 0.58);
+}
+
+.panel-stations li.is-inactive > span {
+  background: var(--paper-deep);
+  color: var(--ink-soft);
 }
 
 .panel-stations strong,
@@ -1897,6 +2039,11 @@ a:focus-visible {
 
 .control-button--primary span {
   background: rgba(21, 55, 50, 0.1);
+}
+
+.control-button--availability {
+  border-color: rgba(227, 107, 75, 0.72);
+  color: #ffc4b2;
 }
 
 .session-footnote {

@@ -448,6 +448,17 @@ export function stationsForSpaceMode(
   );
 }
 
+export function availableStations(
+  stations: Station[],
+  spaceMode: SpaceMode,
+  excludedStationIds: Iterable<string> = [],
+) {
+  const excluded = new Set(excludedStationIds);
+  return stationsForSpaceMode(stations, spaceMode).filter(
+    (station) => !excluded.has(station.id),
+  );
+}
+
 const QUIET_KINDS = new Set<StationKind>(["view", "nature", "rest"]);
 
 function uniqueStationOrder(entry: RouteHistoryEntry) {
@@ -762,6 +773,210 @@ export function buildRoute(
   });
 
   return steps;
+}
+
+function routeSuffix(revision: number) {
+  return revision > 0 ? `-reroute-${revision}` : "";
+}
+
+function noTravelAction(feeling: Feeling) {
+  const actions: Record<Feeling, string> = {
+    noise:
+      "Turn away from the screen or settle where you are. Let the time have no assignment.",
+    eyes:
+      "Turn away from the screen or close your eyes if comfortable. No other place is needed.",
+    stiff:
+      "Choose the easiest supported position available now. No movement or held pose is required.",
+    air:
+      "Face a different direction if comfortable and notice the light or air already around you.",
+  };
+  return actions[feeling];
+}
+
+function buildNoTravelRouteForSeconds(
+  feeling: Feeling,
+  spaceMode: SpaceMode,
+  totalSeconds: number,
+  revision: number,
+): RouteStep[] {
+  const suffix = routeSuffix(revision);
+  const seconds = Math.max(1, Math.floor(totalSeconds));
+  const preferredReturn = returnSeconds(spaceMode);
+  const returnDuration =
+    seconds <= preferredReturn + 20
+      ? seconds
+      : preferredReturn;
+  const pauseDuration = seconds - returnDuration;
+  const route: RouteStep[] = [];
+  if (pauseDuration > 0) {
+    const action = noTravelAction(feeling);
+    route.push({
+      id: `comfortable-pause-quiet${suffix}`,
+      station: {
+        id: "comfortable-pause",
+        name: "Comfortable pause",
+        kind: "rest",
+        detail: "No travel or assumed destination",
+        modes: ["any", "small", "seated"],
+      },
+      action,
+      spokenCue: `No travel is needed. ${action}`,
+      durationSeconds: pauseDuration,
+      phase: "quiet",
+    });
+  }
+  route.push({
+    id: `return${suffix}`,
+    station: {
+      id: "desk-return",
+      name: pauseDuration > 0 ? "Return point" : "Turn away or return",
+      kind: "rest",
+      detail: "A bounded return",
+      modes: ["any", "small", "seated"],
+    },
+    action:
+      pauseDuration > 0
+        ? "Return when you are ready. The original break boundary is unchanged."
+        : "No place is required. Turn away comfortably, or return when you are ready.",
+    spokenCue:
+      pauseDuration > 0
+        ? "Return phase. Return when you are ready. The original break boundary is unchanged."
+        : "No travel is needed. Turn away comfortably, or return when you are ready.",
+    durationSeconds: returnDuration,
+    phase: "return",
+  });
+  return route;
+}
+
+export function buildNoTravelRoute(
+  feeling: Feeling,
+  durationMinutes: number,
+  spaceMode: SpaceMode,
+  revision = 0,
+) {
+  return buildNoTravelRouteForSeconds(
+    feeling,
+    spaceMode,
+    durationMinutes * 60,
+    revision,
+  );
+}
+
+export interface ReplacementRoute {
+  route: RouteStep[];
+  destination: Station | null;
+}
+
+export function buildReplacementRoute(
+  stations: Station[],
+  feeling: Feeling,
+  durationMinutes: number,
+  remainingSeconds: number,
+  seed: number,
+  options: RouteBuildOptions & { revision: number },
+): ReplacementRoute {
+  const spaceMode = options.spaceMode ?? "any";
+  const eligible = stationsForSpaceMode(stations, spaceMode);
+  const revision = Math.max(1, options.revision);
+  const wholeSeconds = Math.max(1, Math.floor(remainingSeconds));
+  const moveDuration = transitionSeconds(spaceMode);
+  const preferredReturn = returnSeconds(spaceMode);
+  const minimumArrival = 20;
+
+  if (
+    eligible.length === 0 ||
+    wholeSeconds < moveDuration + minimumArrival + preferredReturn
+  ) {
+    return {
+      route: buildNoTravelRouteForSeconds(
+        feeling,
+        spaceMode,
+        wholeSeconds,
+        revision,
+      ),
+      destination: null,
+    };
+  }
+
+  const template = buildRoute(
+    eligible,
+    feeling,
+    Math.max(5, durationMinutes),
+    seed,
+    options,
+  );
+  const destination = template[0].station;
+  const templateMove = template.find((step) => step.phase === "move")!;
+  const templateArrival = template.find((step) => step.phase === "arrive")!;
+  const templateMiddle = template.filter(
+    (step) =>
+      step.phase === "settle" || step.phase === "quiet",
+  );
+  const returnDuration = preferredReturn;
+  const arrivalDuration = Math.min(
+    templateArrival.durationSeconds,
+    wholeSeconds - moveDuration - returnDuration,
+  );
+  const middleSeconds =
+    wholeSeconds - moveDuration - arrivalDuration - returnDuration;
+  const suffix = routeSuffix(revision);
+  const route: RouteStep[] = [
+    {
+      ...templateMove,
+      id: `${templateMove.id}${suffix}`,
+      durationSeconds: moveDuration,
+    },
+    {
+      ...templateArrival,
+      id: `${templateArrival.id}${suffix}`,
+      durationSeconds: arrivalDuration,
+    },
+  ];
+
+  if (middleSeconds > 0 && templateMiddle.length > 0) {
+    const settle = templateMiddle.find((step) => step.phase === "settle");
+    const quiet = templateMiddle.filter((step) => step.phase === "quiet");
+    const settleDuration = settle
+      ? Math.min(settle.durationSeconds, middleSeconds)
+      : 0;
+    if (settle && settleDuration > 0) {
+      route.push({
+        ...settle,
+        id: `${settle.id}${suffix}`,
+        durationSeconds: settleDuration,
+      });
+    }
+    const quietSeconds = middleSeconds - settleDuration;
+    if (quietSeconds > 0 && quiet.length > 0) {
+      let allocated = 0;
+      quiet.forEach((step, index) => {
+        const durationSeconds =
+          index === quiet.length - 1
+            ? quietSeconds - allocated
+            : Math.floor(quietSeconds / quiet.length);
+        allocated += durationSeconds;
+        if (durationSeconds > 0) {
+          route.push({
+            ...step,
+            id: `${step.id}${suffix}`,
+            durationSeconds,
+          });
+        }
+      });
+    }
+  }
+
+  const templateReturn = template.at(-1)!;
+  route.push({
+    ...templateReturn,
+    id: `${templateReturn.id}${suffix}`,
+    action:
+      "Make your way back at an easy pace. The original break boundary is unchanged.",
+    spokenCue:
+      "Return phase. Make your way back at an easy pace. The original break boundary is unchanged.",
+    durationSeconds: returnDuration,
+  });
+  return { route, destination };
 }
 
 export function buildExtension(feeling: Feeling): RouteStep {

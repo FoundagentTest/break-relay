@@ -46,3 +46,8 @@ removing saved stations; resetting local data clears all three.
 Route composition uses distinct move, arrival, quiet, and return phases. Longer
 boundaries add quiet at one suitable place instead of padding quick actions or
 inventing extra travel; see [docs/route-composition.md](docs/route-composition.md).
+
+Saved places remain intact across movement-mode changes. Per-break availability,
+bounded live replacement, no-travel fallback, recovery, and neutral learning
+are documented in
+[docs/availability-and-rerouting.md](docs/availability-and-rerouting.md).

@@ -12,10 +12,34 @@ import type {
   RouteStep,
   SessionRouteContext,
   SpaceMode,
+  Station,
 } from "./types";
 
 export const STORAGE_KEY = "break-relay-preferences-v1";
 export const SESSION_STORAGE_KEY = "break-relay-active-session-v1";
+
+function normalizeStation(value: unknown): Station | null {
+  if (!value || typeof value !== "object") return null;
+  const station = value as Partial<Station>;
+  const modes = Array.isArray(station.modes)
+    ? station.modes.filter(
+        (mode): mode is SpaceMode =>
+          mode === "any" || mode === "small" || mode === "seated",
+      )
+    : [];
+  if (
+    typeof station.id !== "string" ||
+    !station.id ||
+    typeof station.name !== "string" ||
+    !station.name ||
+    typeof station.kind !== "string" ||
+    typeof station.detail !== "string" ||
+    modes.length === 0
+  ) {
+    return null;
+  }
+  return { ...station, modes } as Station;
+}
 
 export function loadPreferences(): Preferences {
   try {
@@ -28,13 +52,14 @@ export function loadPreferences(): Preferences {
       ? (parsed.spaceMode as SpaceMode)
       : DEFAULT_PREFERENCES.spaceMode;
     const savedStations = Array.isArray(parsed.stations)
-      ? parsed.stations.filter(
-          (station) =>
-            !!station &&
-            typeof station.id === "string" &&
-            typeof station.name === "string" &&
-            Array.isArray(station.modes),
-        )
+      ? parsed.stations
+          .map(normalizeStation)
+          .filter((station): station is Station => station !== null)
+          .filter(
+            (station, index, stations) =>
+              stations.findIndex((item) => item.id === station.id) === index,
+          )
+          .slice(0, 24)
       : [];
     const legacyLaunchPreferences =
       typeof parsed.launchSetupComplete !== "boolean";
@@ -61,7 +86,7 @@ export function loadPreferences(): Preferences {
       ...DEFAULT_PREFERENCES,
       ...parsed,
       spaceMode,
-      stations: stationsForSpaceMode(savedStations, spaceMode).slice(0, 6),
+      stations: savedStations,
       keepAwake:
         typeof parsed.keepAwake === "boolean" ? parsed.keepAwake : false,
       alwaysReviewLaunch:
@@ -165,7 +190,11 @@ function normalizeRouteContext(value: unknown): SessionRouteContext | null {
   };
 }
 
-function normalizeSession(value: unknown): ActiveSession | null {
+function normalizeSession(
+  value: unknown,
+  fallbackStations: Station[],
+  fallbackSpaceMode: SpaceMode,
+): ActiveSession | null {
   if (!value || typeof value !== "object") return null;
   const session = value as Omit<Partial<ActiveSession>, "version"> & {
     version?: number;
@@ -177,7 +206,8 @@ function normalizeSession(value: unknown): ActiveSession | null {
     (session.version === 1 ||
       session.version === 2 ||
       session.version === 3 ||
-      session.version === 4) &&
+      session.version === 4 ||
+      session.version === 5) &&
     typeof session.id === "string" &&
     normalizedRoute.length > 0 &&
     normalizedRoute.every(
@@ -226,6 +256,29 @@ function normalizeSession(value: unknown): ActiveSession | null {
               step.station.id !== "comfortable-pause"),
         )
         .map((step) => step.id);
+  const neutralStepIds = Array.isArray(session.neutralStepIds)
+    ? session.neutralStepIds.filter(
+        (id): id is string => typeof id === "string" && routeIds.has(id),
+      )
+    : [];
+  const storedEligibleStations = Array.isArray(session.eligibleStations)
+    ? session.eligibleStations
+        .map(normalizeStation)
+        .filter((station): station is Station => station !== null)
+    : null;
+  const eligibleStations =
+    storedEligibleStations ??
+    stationsForSpaceMode(
+      fallbackStations,
+      routeContext?.spaceMode ?? fallbackSpaceMode,
+    );
+  const unavailableStationIds = Array.isArray(
+    session.unavailableStationIds,
+  )
+    ? session.unavailableStationIds.filter(
+        (id): id is string => typeof id === "string",
+      )
+    : [];
   return {
     ...(session as Omit<
       ActiveSession,
@@ -233,14 +286,27 @@ function normalizeSession(value: unknown): ActiveSession | null {
       | "routeContext"
       | "skippedStepIds"
       | "reachedStepIds"
+      | "neutralStepIds"
+      | "eligibleStations"
+      | "unavailableStationIds"
+      | "rerouteCount"
       | "cueDeliveryFailed"
       | "wakeLockFailed"
     >),
-    version: 4,
+    version: 5,
     route,
     routeContext,
     skippedStepIds,
     reachedStepIds,
+    neutralStepIds,
+    eligibleStations,
+    unavailableStationIds,
+    rerouteCount:
+      typeof session.rerouteCount === "number" &&
+      Number.isInteger(session.rerouteCount) &&
+      session.rerouteCount >= 0
+        ? session.rerouteCount
+        : 0,
     cueDeliveryFailed:
       typeof session.cueDeliveryFailed === "boolean"
         ? session.cueDeliveryFailed
@@ -256,7 +322,12 @@ export function loadSession(now = Date.now()): ActiveSession | null {
   try {
     const saved = window.localStorage.getItem(SESSION_STORAGE_KEY);
     if (!saved) return null;
-    const parsed = normalizeSession(JSON.parse(saved) as unknown);
+    const preferences = loadPreferences();
+    const parsed = normalizeSession(
+      JSON.parse(saved) as unknown,
+      preferences.stations,
+      preferences.spaceMode,
+    );
     if (!parsed) {
       clearSession();
       return null;

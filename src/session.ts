@@ -47,6 +47,10 @@ export function createSession({
   routeContext = null,
   skippedStepIds = [],
   reachedStepIds,
+  neutralStepIds = [],
+  eligibleStations = [],
+  unavailableStationIds = [],
+  rerouteCount = 0,
   now = Date.now(),
   id,
 }: {
@@ -58,13 +62,17 @@ export function createSession({
   routeContext?: SessionRouteContext | null;
   skippedStepIds?: string[];
   reachedStepIds?: string[];
+  neutralStepIds?: string[];
+  eligibleStations?: ActiveSession["eligibleStations"];
+  unavailableStationIds?: string[];
+  rerouteCount?: number;
   now?: number;
   id?: string;
 }): ActiveSession {
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 4,
+    version: 5,
     id: id ?? createSessionId(now),
     route,
     routeContext,
@@ -72,6 +80,10 @@ export function createSession({
     reachedStepIds:
       reachedStepIds ??
       (isLearnableStep(route[0]) ? [route[0].id] : []),
+    neutralStepIds,
+    eligibleStations,
+    unavailableStationIds,
+    rerouteCount,
     startedAt: now,
     stepDeadlineAt: now + firstStepMs,
     deadlineAt: now + routeDurationMs(route),
@@ -112,6 +124,8 @@ export function reconcileSession(
       currentStepIndex: session.route.length - 1,
       status: "complete",
       completedAt: session.deadlineAt,
+      eligibleStations: [],
+      unavailableStationIds: [],
       updatedAt: now,
     };
   }
@@ -126,25 +140,6 @@ export function reconcileSession(
     currentStepIndex += 1;
     stepDeadlineAt +=
       session.route[currentStepIndex].durationSeconds * SECOND;
-  }
-
-  if (
-    currentStepIndex === session.route.length - 1 &&
-    now >= stepDeadlineAt
-  ) {
-    return {
-      ...session,
-      currentStepIndex,
-      stepDeadlineAt,
-      reachedStepIds: reachedAt(
-        session.route,
-        currentStepIndex,
-        session.reachedStepIds,
-      ),
-      status: "complete",
-      completedAt: Math.min(stepDeadlineAt, session.deadlineAt),
-      updatedAt: now,
-    };
   }
 
   if (
@@ -205,11 +200,31 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
   }
 
   const currentStepIndex = current.currentStepIndex + 1;
+  const route = current.route.map((step) => ({ ...step }));
+  const scheduledRemainingSeconds = route
+    .slice(currentStepIndex)
+    .reduce((total, step) => total + step.durationSeconds, 0);
+  const absoluteRemainingSeconds = Math.max(
+    1,
+    Math.ceil(
+      (current.deadlineAt -
+        (current.paused && current.pausedAt !== null
+          ? current.pausedAt
+          : now)) /
+        SECOND,
+    ),
+  );
+  const pacingSlack =
+    absoluteRemainingSeconds - scheduledRemainingSeconds;
+  const quietIndex = route.findIndex(
+    (step, index) =>
+      index >= currentStepIndex && step.phase === "quiet",
+  );
+  if (pacingSlack > 0 && quietIndex >= currentStepIndex) {
+    route[quietIndex].durationSeconds += pacingSlack;
+  }
   const stepDeadlineAt =
-    now + current.route[currentStepIndex].durationSeconds * SECOND;
-  const futureDuration = current.route
-    .slice(currentStepIndex + 1)
-    .reduce((total, step) => total + step.durationSeconds * SECOND, 0);
+    now + route[currentStepIndex].durationSeconds * SECOND;
   const skippedStepIds =
     isLearnableStep(current.route[current.currentStepIndex])
       ? [
@@ -220,15 +235,83 @@ export function skipStep(session: ActiveSession, now = Date.now()) {
 
   return {
     ...current,
+    route,
     currentStepIndex,
     skippedStepIds,
     reachedStepIds: reachedAt(
-      current.route,
+      route,
       currentStepIndex,
       current.reachedStepIds,
     ),
     stepDeadlineAt,
-    deadlineAt: stepDeadlineAt + futureDuration,
+    pausedAt: current.paused ? now : null,
+    lastAnnouncedStepId: null,
+    updatedAt: now,
+  };
+}
+
+export function recomposeSession(
+  session: ActiveSession,
+  replacementRoute: RouteStep[],
+  rejectedStationId: string,
+  now = Date.now(),
+) {
+  const current = reconcileSession(session, now);
+  if (
+    current.status === "complete" ||
+    replacementRoute.length === 0 ||
+    current.unavailableStationIds.includes(rejectedStationId) ||
+    current.rerouteCount >= current.eligibleStations.length
+  ) {
+    return current;
+  }
+
+  const unavailableStationIds = [
+    ...current.unavailableStationIds,
+    rejectedStationId,
+  ];
+  const rejectedStepIds =
+    current.routeContext?.steps
+      .filter((step) => step.stationId === rejectedStationId)
+      .map((step) => step.stepId) ?? [];
+  const replacementContextSteps = replacementRoute
+    .filter(isLearnableStep)
+    .map((step) => ({
+      stepId: step.id,
+      stationId: step.station.id,
+      stationName: step.station.name,
+      action: step.action,
+    }));
+  const existingContext = current.routeContext;
+  const contextSteps = [
+    ...(existingContext?.steps ?? []),
+    ...replacementContextSteps,
+  ].filter(
+    (step, index, steps) =>
+      steps.findIndex((candidate) => candidate.stepId === step.stepId) ===
+      index,
+  );
+
+  return {
+    ...current,
+    route: replacementRoute,
+    routeContext: existingContext
+      ? { ...existingContext, steps: contextSteps }
+      : null,
+    currentStepIndex: 0,
+    stepDeadlineAt:
+      now + replacementRoute[0].durationSeconds * SECOND,
+    skippedStepIds: current.skippedStepIds,
+    reachedStepIds: reachedAt(
+      replacementRoute,
+      0,
+      current.reachedStepIds,
+    ),
+    neutralStepIds: [
+      ...new Set([...current.neutralStepIds, ...rejectedStepIds]),
+    ],
+    unavailableStationIds,
+    rerouteCount: current.rerouteCount + 1,
     pausedAt: current.paused ? now : null,
     lastAnnouncedStepId: null,
     updatedAt: now,
@@ -246,6 +329,8 @@ export function completeSession(
     status: "complete",
     endedEarly,
     completedAt: now,
+    eligibleStations: [],
+    unavailableStationIds: [],
     paused: false,
     pausedAt: null,
     updatedAt: now,
@@ -286,6 +371,7 @@ export function replaceWithExtension(
       routeContext: session.routeContext,
       skippedStepIds: session.skippedStepIds,
       reachedStepIds: session.reachedStepIds,
+      neutralStepIds: session.neutralStepIds,
       now,
       id: session.id,
     }),

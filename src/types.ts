@@ -82,12 +82,16 @@ export interface SessionRouteContext {
 }
 
 export interface ActiveSession {
-  version: 4;
+  version: 5;
   id: string;
   route: RouteStep[];
   routeContext: SessionRouteContext | null;
   skippedStepIds: string[];
   reachedStepIds: string[];
+  neutralStepIds: string[];
+  eligibleStations: Station[];
+  unavailableStationIds: string[];
+  rerouteCount: number;
   startedAt: number;
   stepDeadlineAt: number;
   deadlineAt: number;

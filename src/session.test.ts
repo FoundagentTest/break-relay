@@ -105,7 +105,7 @@ describe("wall-clock relay reconciliation", () => {
     expect(resumed.paused).toBe(false);
   });
 
-  it("persists a skip as a new exact boundary without replay eligibility", () => {
+  it("persists a cue skip without changing the absolute boundary", () => {
     const started = markCueAnnounced(
       createSession({
         route: route(),
@@ -121,7 +121,7 @@ describe("wall-clock relay reconciliation", () => {
 
     expect(skipped.currentStepIndex).toBe(1);
     expect(skipped.stepDeadlineAt).toBe(14_000);
-    expect(skipped.deadlineAt).toBe(24_000);
+    expect(skipped.deadlineAt).toBe(31_000);
     expect(skipped.lastAnnouncedStepId).toBeNull();
     expect(skipped.skippedStepIds).toEqual(["step-0"]);
     expect(skipped.reachedStepIds).toEqual(["step-0", "step-1"]);
@@ -154,13 +154,14 @@ describe("wall-clock relay reconciliation", () => {
     const recovered = loadSession(2_000);
 
     expect(recovered).toMatchObject({
-      version: 4,
+      version: 5,
       id: "legacy-active",
       status: "active",
       currentStepIndex: 0,
       routeContext: null,
       skippedStepIds: [],
       reachedStepIds: ["step-0"],
+      neutralStepIds: [],
       cueDeliveryFailed: false,
       wakeLockFailed: false,
     });
