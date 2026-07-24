@@ -1,8 +1,10 @@
 import { DEFAULT_PREFERENCES } from "./data";
+import { getRelayCapabilities } from "./capabilities";
 import { reconcileSession } from "./session";
 import type {
   ActiveSession,
   Feeling,
+  LaunchCapabilitySnapshot,
   Preferences,
   RouteStep,
   SessionRouteContext,
@@ -17,10 +19,46 @@ export function loadPreferences(): Preferences {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) return DEFAULT_PREFERENCES;
     const parsed = JSON.parse(saved) as Partial<Preferences>;
+    const legacyLaunchPreferences =
+      typeof parsed.launchSetupComplete !== "boolean";
+    const currentCapabilities = getRelayCapabilities();
+    const savedSnapshot = parsed.capabilitySnapshot;
+    const capabilitySnapshot: LaunchCapabilitySnapshot | null =
+      savedSnapshot &&
+      typeof savedSnapshot.speech === "boolean" &&
+      typeof savedSnapshot.wakeLock === "boolean"
+        ? savedSnapshot
+        : legacyLaunchPreferences && parsed.hasOnboarded
+          ? {
+              // The previous launch gate only persisted spoken mode after its
+              // voice check. Preserve that evidence so a now-missing speech
+              // capability is treated as a change instead of silently trusted.
+              speech:
+                parsed.audioEnabled === true
+                  ? true
+                  : currentCapabilities.speech,
+              wakeLock: currentCapabilities.wakeLock,
+            }
+          : null;
     return {
       ...DEFAULT_PREFERENCES,
       ...parsed,
       stations: Array.isArray(parsed.stations) ? parsed.stations : [],
+      keepAwake:
+        typeof parsed.keepAwake === "boolean" ? parsed.keepAwake : false,
+      alwaysReviewLaunch:
+        typeof parsed.alwaysReviewLaunch === "boolean"
+          ? parsed.alwaysReviewLaunch
+          : false,
+      launchSetupComplete:
+        typeof parsed.launchSetupComplete === "boolean"
+          ? parsed.launchSetupComplete
+          : parsed.hasOnboarded === true,
+      launchNeedsReview:
+        typeof parsed.launchNeedsReview === "boolean"
+          ? parsed.launchNeedsReview
+          : false,
+      capabilitySnapshot,
     };
   } catch {
     return DEFAULT_PREFERENCES;
@@ -89,7 +127,9 @@ function normalizeSession(value: unknown): ActiveSession | null {
     version?: number;
   };
   const valid =
-    (session.version === 1 || session.version === 2) &&
+    (session.version === 1 ||
+      session.version === 2 ||
+      session.version === 3) &&
     typeof session.id === "string" &&
     Array.isArray(session.route) &&
     session.route.length > 0 &&
@@ -134,12 +174,25 @@ function normalizeSession(value: unknown): ActiveSession | null {
   return {
     ...(session as Omit<
       ActiveSession,
-      "version" | "routeContext" | "skippedStepIds" | "reachedStepIds"
+      | "version"
+      | "routeContext"
+      | "skippedStepIds"
+      | "reachedStepIds"
+      | "cueDeliveryFailed"
+      | "wakeLockFailed"
     >),
-    version: 2,
+    version: 3,
     routeContext,
     skippedStepIds,
     reachedStepIds,
+    cueDeliveryFailed:
+      typeof session.cueDeliveryFailed === "boolean"
+        ? session.cueDeliveryFailed
+        : false,
+    wakeLockFailed:
+      typeof session.wakeLockFailed === "boolean"
+        ? session.wakeLockFailed
+        : false,
   };
 }
 

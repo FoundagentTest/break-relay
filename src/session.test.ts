@@ -149,13 +149,15 @@ describe("wall-clock relay reconciliation", () => {
     const recovered = loadSession(2_000);
 
     expect(recovered).toMatchObject({
-      version: 2,
+      version: 3,
       id: "legacy-active",
       status: "active",
       currentStepIndex: 0,
       routeContext: null,
       skippedStepIds: [],
       reachedStepIds: ["step-0"],
+      cueDeliveryFailed: false,
+      wakeLockFailed: false,
     });
   });
 });

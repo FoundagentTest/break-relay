@@ -1301,14 +1301,50 @@ a:focus-visible {
   place-items: center;
 }
 
-.cue-mode {
+.launch-summary {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding-top: 16px;
-  color: rgba(255, 255, 255, 0.55);
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 18px;
+  color: rgba(255, 255, 255, 0.7);
   font-size: 0.64rem;
+}
+
+.launch-summary > div {
+  display: grid;
+  gap: 8px;
+}
+
+.launch-summary span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.launch-review-button {
+  min-height: 44px;
+  flex: 0 0 auto;
+  padding: 0 2px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--lime);
+  font-size: 0.65rem;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 5px;
+}
+
+.launch-boundary,
+.always-review-note {
+  margin: 13px 0 0;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.6rem;
+  line-height: 1.5;
+}
+
+.always-review-note {
+  color: var(--lime);
 }
 
 .app-footer {
@@ -1443,6 +1479,29 @@ a:focus-visible {
   margin: 5px 0 0;
   color: var(--ink-soft);
   font-size: 0.67rem;
+}
+
+.launch-settings {
+  display: grid;
+  gap: 20px;
+}
+
+.launch-settings > .panel-section__heading {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.launch-settings > .panel-section__heading p {
+  max-width: 270px;
+  margin: 5px 0 0;
+  color: var(--ink-soft);
+  font-size: 0.67rem;
+  line-height: 1.45;
+}
+
+.launch-settings > .panel-setting-row {
+  padding-top: 18px;
+  border-top: 1px dashed var(--line);
 }
 
 .local-card {
@@ -2130,6 +2189,14 @@ a:focus-visible {
   line-height: 1.55;
 }
 
+.capability-card .capability-warning {
+  padding: 10px 12px;
+  margin: 14px 0 0;
+  border-radius: 10px;
+  background: rgba(227, 107, 75, 0.12);
+  color: var(--coral-dark);
+}
+
 .audio-check {
   display: inline-flex;
   min-height: 44px;
@@ -2193,6 +2260,32 @@ a:focus-visible {
 
 .wake-choice input:disabled + span {
   opacity: 0.4;
+}
+
+.review-choice-card {
+  display: flex;
+  min-height: 88px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 28px;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-md);
+  background: rgba(255, 253, 248, 0.48);
+}
+
+.review-choice-card h2 {
+  margin: 0 0 5px;
+  font-family: "Instrument Serif", Georgia, serif;
+  font-size: 1.3rem;
+  font-weight: 400;
+}
+
+.review-choice-card p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.68rem;
+  line-height: 1.45;
 }
 
 .boundary-card {
@@ -2535,7 +2628,9 @@ a:focus-visible {
 
   .ready-route,
   .start-button,
-  .cue-mode {
+  .launch-summary,
+  .launch-boundary,
+  .always-review-note {
     grid-column: 2;
   }
 

@@ -24,7 +24,17 @@ export interface Preferences {
   duration: 5 | 7 | 10;
   spaceMode: SpaceMode;
   audioEnabled: boolean;
+  keepAwake: boolean;
+  alwaysReviewLaunch: boolean;
+  launchSetupComplete: boolean;
+  launchNeedsReview: boolean;
+  capabilitySnapshot: LaunchCapabilitySnapshot | null;
   hasOnboarded: boolean;
+}
+
+export interface LaunchCapabilitySnapshot {
+  speech: boolean;
+  wakeLock: boolean;
 }
 
 export interface RouteStep {
@@ -72,7 +82,7 @@ export interface SessionRouteContext {
 }
 
 export interface ActiveSession {
-  version: 2;
+  version: 3;
   id: string;
   route: RouteStep[];
   routeContext: SessionRouteContext | null;
@@ -89,6 +99,8 @@ export interface ActiveSession {
   extensionUsed: boolean;
   audioEnabled: boolean;
   keepAwake: boolean;
+  cueDeliveryFailed: boolean;
+  wakeLockFailed: boolean;
   durationMinutes: number;
   completedAt: number | null;
   lastAnnouncedStepId: string | null;

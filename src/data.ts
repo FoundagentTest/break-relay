@@ -270,6 +270,11 @@ export const DEFAULT_PREFERENCES: Preferences = {
   duration: 7,
   spaceMode: "any",
   audioEnabled: true,
+  keepAwake: false,
+  alwaysReviewLaunch: false,
+  launchSetupComplete: false,
+  launchNeedsReview: false,
+  capabilitySnapshot: null,
   hasOnboarded: false,
 };
 

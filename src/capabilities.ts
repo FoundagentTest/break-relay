@@ -29,17 +29,31 @@ export function getRelayCapabilities(
 
 export function speakCue(text: string, onError?: () => void) {
   const capabilities = getRelayCapabilities();
-  if (!capabilities.speech) {
-    onError?.();
+  let failed = false;
+  const fallback = () => {
+    if (failed) return;
+    failed = true;
     navigator.vibrate?.([120, 80, 120]);
+    onError?.();
+  };
+  if (!capabilities.speech) {
+    fallback();
     return false;
   }
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.88;
-  utterance.pitch = 0.92;
-  utterance.volume = 0.78;
-  utterance.onerror = onError ?? null;
-  window.speechSynthesis.speak(utterance);
-  return true;
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 0.88;
+    utterance.pitch = 0.92;
+    utterance.volume = 0.78;
+    utterance.onerror = (event) => {
+      if (event.error === "canceled" || event.error === "interrupted") return;
+      fallback();
+    };
+    window.speechSynthesis.speak(utterance);
+    return true;
+  } catch {
+    fallback();
+    return false;
+  }
 }

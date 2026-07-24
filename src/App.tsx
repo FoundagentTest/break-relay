@@ -44,6 +44,7 @@ import {
 import type {
   ActiveSession,
   Feeling,
+  LaunchCapabilitySnapshot,
   Preferences,
   RouteOutcome,
   SpaceMode,
@@ -526,7 +527,28 @@ function canUseSpeech() {
 }
 
 function speak(text: string, onError?: () => void) {
-  speakCue(text, onError);
+  return speakCue(text, onError);
+}
+
+function launchCapabilitySnapshot(): LaunchCapabilitySnapshot {
+  const capabilities = getRelayCapabilities();
+  return {
+    speech: capabilities.speech,
+    wakeLock: capabilities.wakeLock,
+  };
+}
+
+function needsLaunchReview(preferences: Preferences) {
+  const current = launchCapabilitySnapshot();
+  const previous = preferences.capabilitySnapshot;
+  return (
+    !preferences.launchSetupComplete ||
+    preferences.alwaysReviewLaunch ||
+    preferences.launchNeedsReview ||
+    !previous ||
+    (preferences.audioEnabled && previous.speech !== current.speech) ||
+    (preferences.keepAwake && previous.wakeLock !== current.wakeLock)
+  );
 }
 
 function AudioChoice({
@@ -667,25 +689,37 @@ function Readiness({
 }: {
   preferences: Preferences;
   onBack: () => void;
-  onStart: (options: { audioEnabled: boolean; keepAwake: boolean }) => void;
+  onStart: (options: {
+    audioEnabled: boolean;
+    keepAwake: boolean;
+    alwaysReviewLaunch: boolean;
+  }) => void;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
   const [visualOnly, setVisualOnly] = useState(
     preferences.audioEnabled && !capabilities.speech,
   );
-  const [audioReady, setAudioReady] = useState(
-    !preferences.audioEnabled || !capabilities.speech,
+  const [audioTested, setAudioTested] = useState(false);
+  const [audioTestFailed, setAudioTestFailed] = useState(false);
+  const [keepAwake, setKeepAwake] = useState(
+    preferences.keepAwake && capabilities.wakeLock,
   );
-  const [keepAwake, setKeepAwake] = useState(false);
+  const [alwaysReviewLaunch, setAlwaysReviewLaunch] = useState(
+    preferences.alwaysReviewLaunch,
+  );
   const audioEnabled =
     preferences.audioEnabled && capabilities.speech && !visualOnly;
 
   function checkAudio() {
+    setAudioTested(true);
+    setAudioTestFailed(false);
     speak(
       "Break Relay is ready. The next cue will name one place and one action.",
-      () => setVisualOnly(true),
+      () => {
+        setVisualOnly(true);
+        setAudioTestFailed(true);
+      },
     );
-    setAudioReady(true);
   }
 
   return (
@@ -698,11 +732,18 @@ function Readiness({
       </header>
       <section className="readiness-shell">
         <div className="readiness-copy">
-          <p className="eyebrow">BEFORE YOU STEP AWAY</p>
+          <p className="eyebrow">
+            {preferences.launchNeedsReview
+              ? "LAUNCH SETUP NEEDS A LOOK"
+              : preferences.launchSetupComplete
+                ? "CUE & SCREEN SETUP"
+                : "FIRST-USE SETUP"}
+          </p>
           <h1>Set a boundary this browser can keep.</h1>
           <p className="lede">
             Your exact route and deadline stay on this device. If the tab sleeps
-            or reloads, Relay catches up to the one cue that matters now.
+            or reloads, Relay catches up to the one cue that matters now. Tests
+            here are optional—the first real route cue can be your confirmation.
           </p>
         </div>
 
@@ -718,7 +759,7 @@ function Readiness({
                 </p>
                 <h2>
                   {capabilities.speech
-                    ? "Let your browser speak once."
+                    ? "Choose spoken or visual cues."
                     : "This browser cannot speak the route."}
                 </h2>
                 <p>
@@ -729,13 +770,18 @@ function Readiness({
                 {preferences.audioEnabled && capabilities.speech && !visualOnly && (
                   <button
                     className={`secondary-button audio-check ${
-                      audioReady ? "is-checked" : ""
+                      audioTested && !audioTestFailed ? "is-checked" : ""
                     }`}
                     onClick={checkAudio}
                     type="button"
                   >
-                    <Icon name={audioReady ? "check" : "play"} size={17} />
-                    {audioReady ? "Cue check played" : "Play cue check"}
+                    <Icon
+                      name={audioTested && !audioTestFailed ? "check" : "play"}
+                      size={17}
+                    />
+                    {audioTested && !audioTestFailed
+                      ? "Optional voice test played"
+                      : "Test voice (optional)"}
                   </button>
                 )}
                 {preferences.audioEnabled && capabilities.speech && (
@@ -744,12 +790,18 @@ function Readiness({
                     onClick={() => {
                       window.speechSynthesis.cancel();
                       setVisualOnly((current) => !current);
-                      setAudioReady(true);
+                      setAudioTestFailed(false);
                     }}
                     type="button"
                   >
                     {visualOnly ? "Use spoken cues" : "Use visual cues instead"}
                   </button>
+                )}
+                {audioTestFailed && (
+                  <p className="capability-warning" role="status">
+                    The voice test failed, so this relay will use the visible cue
+                    and vibration where supported.
+                  </p>
                 )}
               </div>
             </article>
@@ -784,6 +836,27 @@ function Readiness({
                 </label>
               </div>
             </article>
+
+            <article className="review-choice-card">
+              <div>
+                <h2>Review before every relay</h2>
+                <p>
+                  Optional. Turn this on if you prefer to confirm cue and screen
+                  behavior every time.
+                </p>
+              </div>
+              <label className="switch">
+                <span className="sr-only">Review launch setup every time</span>
+                <input
+                  checked={alwaysReviewLaunch}
+                  onChange={(event) =>
+                    setAlwaysReviewLaunch(event.target.checked)
+                  }
+                  type="checkbox"
+                />
+                <span aria-hidden="true" />
+              </label>
+            </article>
           </section>
 
           <aside className="boundary-card">
@@ -797,16 +870,22 @@ function Readiness({
             </p>
             <button
               className="primary-button primary-button--coral primary-button--wide"
-              disabled={audioEnabled && !audioReady}
-              onClick={() => onStart({ audioEnabled, keepAwake })}
+              onClick={() =>
+                onStart({
+                  audioEnabled,
+                  keepAwake,
+                  alwaysReviewLaunch,
+                })
+              }
               type="button"
             >
               Start and step away
               <Icon name="arrow" />
             </button>
-            {audioEnabled && !audioReady && (
-              <small>Play the cue check once, or choose visual cues.</small>
-            )}
+            <small>
+              No sample is required. Your first station cue plays from this
+              action.
+            </small>
           </aside>
         </div>
         <PrivacyNote />
@@ -898,15 +977,20 @@ function AppHeader({ onSettings }: { onSettings: () => void }) {
 function Home({
   preferences,
   onChange,
+  onReview,
   onStart,
   onSettings,
 }: {
   preferences: Preferences;
   onChange: (preferences: Preferences) => void;
+  onReview: () => void;
   onStart: () => void;
   onSettings: () => void;
 }) {
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
+  const capabilities = getRelayCapabilities();
+  const spokenMode = preferences.audioEnabled && capabilities.speech;
+  const awakeMode = preferences.keepAwake && capabilities.wakeLock;
   return (
     <main className="home-page">
       <AppHeader onSettings={onSettings} />
@@ -969,12 +1053,47 @@ function Home({
               </span>
               Begin my break
             </button>
-            <div className="cue-mode">
-              <Icon name={preferences.audioEnabled ? "sound" : "spark"} size={17} />
-              {preferences.audioEnabled && canUseSpeech()
-                ? "Spoken cues are on"
-                : "Visual cues stay on screen"}
+            <div className="launch-summary" aria-label="Current screen-away mode">
+              <div>
+                <span>
+                  <Icon name={spokenMode ? "sound" : "spark"} size={17} />
+                  {preferences.launchNeedsReview && preferences.audioEnabled
+                    ? "Spoken cues need review"
+                    : spokenMode
+                    ? "Spoken + visible cues"
+                    : preferences.audioEnabled
+                      ? "Voice unavailable · visible cues"
+                      : "Visible cues + vibration"}
+                </span>
+                <span>
+                  <Icon name="spark" size={17} />
+                  {preferences.launchNeedsReview && preferences.keepAwake
+                    ? "Screen wake needs review"
+                    : awakeMode
+                    ? "Keep dim display awake"
+                    : preferences.keepAwake
+                      ? "Screen wake unavailable"
+                      : "Display may sleep normally"}
+                </span>
+              </div>
+              <button className="launch-review-button" onClick={onReview} type="button">
+                Review or change
+              </button>
             </div>
+            <p className="launch-boundary">
+              Keep Relay visible when possible. Background or locked-screen cues
+              are never guaranteed.
+            </p>
+            {preferences.alwaysReviewLaunch && (
+              <p className="always-review-note">
+                Launch review is required before every relay.
+              </p>
+            )}
+            {preferences.launchNeedsReview && (
+              <p className="always-review-note" role="status">
+                Review is needed after a cue, permission, or capability issue.
+              </p>
+            )}
           </aside>
         </div>
       </section>
@@ -991,14 +1110,20 @@ function SettingsPanel({
   onClose,
   onEdit,
   onAudioChange,
+  onAlwaysReviewChange,
   onClearHistory,
+  onKeepAwakeChange,
+  onReviewLaunch,
   onReset,
 }: {
   preferences: Preferences;
   onClose: () => void;
   onEdit: () => void;
   onAudioChange: (enabled: boolean) => void;
+  onAlwaysReviewChange: (enabled: boolean) => void;
   onClearHistory: () => void;
+  onKeepAwakeChange: (enabled: boolean) => void;
+  onReviewLaunch: () => void;
   onReset: () => void;
 }) {
   const [confirmReset, setConfirmReset] = useState(false);
@@ -1086,6 +1211,60 @@ function SettingsPanel({
             />
             <span aria-hidden="true" />
           </label>
+        </section>
+
+        <section className="panel-section launch-settings">
+          <div className="panel-section__heading">
+            <div>
+              <h3>Screen-away launch</h3>
+              <p>
+                Saved only here. Web cues may stop in the background or on a
+                locked screen.
+              </p>
+            </div>
+            <button className="inline-button" onClick={onReviewLaunch} type="button">
+              Review setup
+            </button>
+          </div>
+          <div className="panel-setting-row">
+            <div>
+              <h3>Keep dim display awake</h3>
+              <p>
+                {getRelayCapabilities().wakeLock
+                  ? "Request screen wake only during an active relay."
+                  : "Unavailable in this browser."}
+              </p>
+            </div>
+            <label className="switch">
+              <span className="sr-only">Keep dim display awake</span>
+              <input
+                checked={
+                  preferences.keepAwake && getRelayCapabilities().wakeLock
+                }
+                disabled={!getRelayCapabilities().wakeLock}
+                onChange={(event) => onKeepAwakeChange(event.target.checked)}
+                type="checkbox"
+              />
+              <span aria-hidden="true" />
+            </label>
+          </div>
+          <div className="panel-setting-row">
+            <div>
+              <h3>Review every launch</h3>
+              <p>Require the cue and screen explanation before starting.</p>
+            </div>
+            <label className="switch">
+              <span className="sr-only">Review launch setup every time</span>
+              <input
+                checked={preferences.alwaysReviewLaunch}
+                onChange={(event) =>
+                  onAlwaysReviewChange(event.target.checked)
+                }
+                type="checkbox"
+              />
+              <span aria-hidden="true" />
+            </label>
+          </div>
         </section>
 
         <section className="local-card">
@@ -1262,16 +1441,18 @@ function useWakeLock(enabled: boolean) {
 
 function RelaySession({
   session,
+  onCapabilityFailure,
   onChange,
   onFinish,
 }: {
   session: ActiveSession;
+  onCapabilityFailure: (kind: "speech" | "wake") => void;
   onChange: (session: ActiveSession) => void;
   onFinish: (session: ActiveSession) => void;
 }) {
   const [clock, setClock] = useState(Date.now());
   const [speechFailed, setSpeechFailed] = useState(
-    session.audioEnabled && !canUseSpeech(),
+    session.cueDeliveryFailed || (session.audioEnabled && !canUseSpeech()),
   );
   const sessionRef = useRef(session);
   const finishing = useRef(false);
@@ -1298,7 +1479,10 @@ function RelaySession({
       const cue = next.route[next.currentStepIndex]?.spokenCue;
       if (!cue) return;
       if (next.audioEnabled) {
-        speak(cue, () => setSpeechFailed(true));
+        speak(cue, () => {
+          setSpeechFailed(true);
+          onCapabilityFailure("speech");
+        });
       } else {
         navigator.vibrate?.([120, 80, 120]);
       }
@@ -1307,7 +1491,7 @@ function RelaySession({
       );
       commit(marked);
     },
-    [commit],
+    [commit, onCapabilityFailure],
   );
 
   const finish = useCallback(
@@ -1321,7 +1505,10 @@ function RelaySession({
             next.endedEarly
               ? "Your relay has ended. Return when you are ready."
               : "You are back at the boundary. Return when you are ready.",
-            () => setSpeechFailed(true),
+            () => {
+              setSpeechFailed(true);
+              onCapabilityFailure("speech");
+            },
           );
         } else {
           navigator.vibrate?.([140, 90, 140]);
@@ -1335,8 +1522,18 @@ function RelaySession({
       sessionRef.current = finished;
       onFinish(finished);
     },
-    [onFinish],
+    [onCapabilityFailure, onFinish],
   );
+
+  useEffect(() => {
+    if (wakeStatus === "failed" && !session.wakeLockFailed) {
+      onCapabilityFailure("wake");
+    }
+  }, [
+    onCapabilityFailure,
+    session.wakeLockFailed,
+    wakeStatus,
+  ]);
 
   useEffect(() => {
     document.title = `${step.station.name} · Break Relay`;
@@ -1455,7 +1652,8 @@ function RelaySession({
             <p>
               <strong>Audio isn’t available here.</strong> Keep this large cue
               visible. The page title also changes at every stop, and vibration is
-              used where supported.
+              used where supported. Your route and clock are unchanged; launch
+              setup will be ready to revise next time.
             </p>
           </div>
         )}
@@ -1626,6 +1824,7 @@ export default function App() {
   const [interruptedCompletion, setInterruptedCompletion] = useState(
     recovered?.status === "complete",
   );
+  const launchingRef = useRef(false);
   const [readinessReturn, setReadinessReturn] = useState<"home" | "tune">(
     "home",
   );
@@ -1638,6 +1837,8 @@ export default function App() {
     if (screen !== "session" && screen !== "complete") {
       document.title = "Break Relay · A route away, then back";
     }
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
   }, [screen]);
 
   const updatePreferences = useCallback((next: Preferences) => {
@@ -1650,19 +1851,54 @@ export default function App() {
     saveSession(next);
   }, []);
 
+  const flagSessionCapabilityFailure = useCallback(
+    (sessionId: string, kind: "speech" | "wake") => {
+      setPreferences((current) => {
+        const next = { ...current, launchNeedsReview: true };
+        savePreferences(next);
+        return next;
+      });
+      setSession((current) => {
+        if (!current || current.id !== sessionId) return current;
+        const next = {
+          ...current,
+          audioEnabled: kind === "speech" ? false : current.audioEnabled,
+          cueDeliveryFailed:
+            kind === "speech" ? true : current.cueDeliveryFailed,
+          wakeLockFailed: kind === "wake" ? true : current.wakeLockFailed,
+          updatedAt: Date.now(),
+        };
+        saveSession(next);
+        return next;
+      });
+    },
+    [],
+  );
+
   function openReadiness(source: Preferences, returnTo: "home" | "tune") {
     setDraft(source);
     setReadinessReturn(returnTo);
     setScreen("readiness");
   }
 
-  function startRelay(options: {
-    audioEnabled: boolean;
-    keepAwake: boolean;
-  }) {
+  function startRelay(
+    source: Preferences,
+    options: {
+      audioEnabled: boolean;
+      keepAwake: boolean;
+      alwaysReviewLaunch: boolean;
+    },
+  ) {
+    if (launchingRef.current || session?.status === "active") return;
+    launchingRef.current = true;
     const nextPreferences = {
-      ...draft,
+      ...source,
       audioEnabled: options.audioEnabled,
+      keepAwake: options.keepAwake,
+      alwaysReviewLaunch: options.alwaysReviewLaunch,
+      launchSetupComplete: true,
+      launchNeedsReview: false,
+      capabilitySnapshot: launchCapabilitySnapshot(),
       hasOnboarded: true,
     };
     updatePreferences(nextPreferences);
@@ -1695,15 +1931,17 @@ export default function App() {
           })),
       },
     });
-    if (options.audioEnabled) {
-      speak(route[0].spokenCue);
-    } else {
-      navigator.vibrate?.([120, 80, 120]);
-    }
     nextSession = markCueAnnounced(nextSession);
     commitSession(nextSession);
     setInterruptedCompletion(false);
     setScreen("session");
+    if (options.audioEnabled) {
+      speak(route[0].spokenCue, () =>
+        flagSessionCapabilityFailure(nextSession.id, "speech"),
+      );
+    } else {
+      navigator.vibrate?.([120, 80, 120]);
+    }
   }
 
   const finishSession = useCallback((finished: ActiveSession) => {
@@ -1715,6 +1953,7 @@ export default function App() {
   function returnHome() {
     clearSession();
     setSession(null);
+    launchingRef.current = false;
     setScreen("home");
     setInterruptedCompletion(false);
   }
@@ -1783,7 +2022,7 @@ export default function App() {
     return (
       <Readiness
         onBack={() => setScreen(readinessReturn)}
-        onStart={startRelay}
+        onStart={(options) => startRelay(draft, options)}
         preferences={draft}
       />
     );
@@ -1796,6 +2035,7 @@ export default function App() {
           window.speechSynthesis?.cancel?.();
           clearSession();
           setSession(null);
+          launchingRef.current = false;
           setScreen("home");
         }}
         onResume={() => {
@@ -1827,6 +2067,9 @@ export default function App() {
     return (
       <RelaySession
         key={session.id}
+        onCapabilityFailure={(kind) =>
+          flagSessionCapabilityFailure(session.id, kind)
+        }
         onChange={commitSession}
         onFinish={finishSession}
         session={session}
@@ -1861,12 +2104,26 @@ export default function App() {
     <>
       <Home
         onChange={updatePreferences}
+        onReview={() => openReadiness(preferences, "home")}
         onSettings={() => setSettingsOpen(true)}
-        onStart={() => openReadiness(preferences, "home")}
+        onStart={() => {
+          if (needsLaunchReview(preferences)) {
+            openReadiness(preferences, "home");
+            return;
+          }
+          startRelay(preferences, {
+            audioEnabled: preferences.audioEnabled,
+            keepAwake: preferences.keepAwake,
+            alwaysReviewLaunch: preferences.alwaysReviewLaunch,
+          });
+        }}
         preferences={preferences}
       />
       {settingsOpen && (
         <SettingsPanel
+          onAlwaysReviewChange={(alwaysReviewLaunch) =>
+            updatePreferences({ ...preferences, alwaysReviewLaunch })
+          }
           onAudioChange={(audioEnabled) =>
             updatePreferences({ ...preferences, audioEnabled })
           }
@@ -1881,6 +2138,13 @@ export default function App() {
             setSettingsOpen(false);
             setScreen("stations");
           }}
+          onKeepAwakeChange={(keepAwake) =>
+            updatePreferences({ ...preferences, keepAwake })
+          }
+          onReviewLaunch={() => {
+            setSettingsOpen(false);
+            openReadiness(preferences, "home");
+          }}
           onReset={() => {
             clearPreferences();
             clearSession();
@@ -1889,6 +2153,7 @@ export default function App() {
             setDraft(DEFAULT_PREFERENCES);
             setRouteMemory({ version: 1, entries: [] });
             setSession(null);
+            launchingRef.current = false;
             setSettingsOpen(false);
             setEditing(false);
             setScreen("stations");

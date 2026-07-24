@@ -59,7 +59,7 @@ export function createSession({
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 2,
+    version: 3,
     id: id ?? createSessionId(now),
     route,
     routeContext,
@@ -78,6 +78,8 @@ export function createSession({
     extensionUsed,
     audioEnabled,
     keepAwake,
+    cueDeliveryFailed: false,
+    wakeLockFailed: false,
     durationMinutes,
     completedAt: null,
     lastAnnouncedStepId: null,
