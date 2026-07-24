@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
+import QRCode from "qrcode";
 import {
   availableStations,
   buildExtension,
@@ -60,6 +61,15 @@ import {
   stationForSpace,
   stationPresetId,
 } from "./spaces";
+import {
+  HANDOFF_TTL_MS,
+  captureHandoffFromLocation,
+  createBreakHandoff,
+  handoffUrl,
+  regenerateBreakHandoff,
+  type BreakHandoff,
+  type HandoffFailure,
+} from "./handoff";
 import type {
   ActiveSession,
   Feeling,
@@ -76,6 +86,9 @@ type Screen =
   | "tune"
   | "home"
   | "readiness"
+  | "handoffSource"
+  | "handoffReceive"
+  | "handoffError"
   | "recover"
   | "session"
   | "complete";
@@ -1073,6 +1086,7 @@ function Home({
   onAvailabilityChange,
   onChange,
   onReview,
+  onHandoff,
   onStart,
   onSettings,
   onSpaceSwitch,
@@ -1082,6 +1096,7 @@ function Home({
   onAvailabilityChange: (stationIds: string[]) => void;
   onChange: (preferences: Preferences) => void;
   onReview: () => void;
+  onHandoff: () => void;
   onStart: () => void;
   onSettings: () => void;
   onSpaceSwitch: (spaceId: string) => void;
@@ -1266,6 +1281,19 @@ function Home({
                 ? "Begin my break"
                 : "Begin a no-travel break"}
             </button>
+            <button
+              className="handoff-button"
+              onClick={onHandoff}
+              type="button"
+            >
+              <span className="handoff-button__icon" aria-hidden="true">
+                <Icon name="arrow" size={18} />
+              </span>
+              <span>
+                <strong>Use another device</strong>
+                <small>Make a private link for this prepared break</small>
+              </span>
+            </button>
             <div className="launch-summary" aria-label="Current screen-away mode">
               <div>
                 <span>
@@ -1314,6 +1342,487 @@ function Home({
         <PrivacyNote />
         <p>A voluntary reset, not a measure of health or productivity.</p>
       </footer>
+    </main>
+  );
+}
+
+function handoffMinutesRemaining(expiresAt: number, now = Date.now()) {
+  return Math.max(0, Math.ceil((expiresAt - now) / 60_000));
+}
+
+function HandoffSource({
+  handoff,
+  onClose,
+  onRegenerate,
+}: {
+  handoff: BreakHandoff;
+  onClose: () => void;
+  onRegenerate: () => void;
+}) {
+  const [now, setNow] = useState(Date.now());
+  const [qrDataUrl, setQrDataUrl] = useState("");
+  const [qrFailed, setQrFailed] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+  const linkInput = useRef<HTMLInputElement>(null);
+  const link = useMemo(
+    () =>
+      handoffUrl(
+        handoff,
+        `${window.location.origin}${window.location.pathname}`,
+      ),
+    [handoff],
+  );
+  const expired = now >= handoff.expiresAt;
+  const minutes = handoffMinutesRemaining(handoff.expiresAt, now);
+  const feeling = FEELINGS.find((item) => item.id === handoff.feeling);
+  const movement = SPACE_MODES.find(
+    (item) => item.id === handoff.space.spaceMode,
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setQrDataUrl("");
+    setQrFailed(false);
+    void QRCode.toString(link, {
+      type: "svg",
+      errorCorrectionLevel: "L",
+      margin: 2,
+      width: 360,
+      color: { dark: "#183f3a", light: "#fffdf7" },
+    })
+      .then((value) => {
+        if (active) {
+          setQrDataUrl(
+            `data:image/svg+xml;charset=utf-8,${encodeURIComponent(value)}`,
+          );
+        }
+      })
+      .catch(() => {
+        if (active) setQrFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [link]);
+
+  async function copyLink() {
+    setCopyStatus("");
+    try {
+      await navigator.clipboard.writeText(link);
+      setCopyStatus("Private link copied.");
+    } catch {
+      linkInput.current?.focus();
+      linkInput.current?.select();
+      try {
+        const copied = document.execCommand?.("copy");
+        setCopyStatus(
+          copied
+            ? "Private link copied."
+            : "Link selected. Use your device’s Copy command.",
+        );
+      } catch {
+        setCopyStatus("Link selected. Use your device’s Copy command.");
+      }
+    }
+  }
+
+  return (
+    <main className="handoff-page">
+      <header className="setup-header">
+        <Brand />
+        <button className="text-button" onClick={onClose} type="button">
+          Close handoff
+        </button>
+      </header>
+      <section className="handoff-shell">
+        <div className="handoff-heading">
+          <div>
+            <p className="eyebrow">PRIVATE DEVICE HANDOFF</p>
+            <h1>Carry this break with you.</h1>
+            <p className="lede">
+              Scan with a nearby device, preview the exact route there, then
+              choose Start on this device. Preparing this handoff did not start
+              a timer or active relay here.
+            </p>
+          </div>
+          <div
+            className={`handoff-expiry ${expired ? "is-expired" : ""}`}
+            role="status"
+          >
+            <span>{expired ? "LINK EXPIRED" : "SHORT-LIVED LINK"}</span>
+            <strong>
+              {expired
+                ? "Regenerate to continue"
+                : `${minutes} min remaining`}
+            </strong>
+          </div>
+        </div>
+
+        <div className="handoff-grid">
+          <section className="qr-card" aria-label="Break handoff QR code">
+            {expired ? (
+              <div className="qr-placeholder">
+                <Icon name="repeat" size={34} />
+                <strong>This QR has expired.</strong>
+                <span>Regenerate the same prepared break.</span>
+              </div>
+            ) : qrDataUrl ? (
+              <img
+                alt="QR code containing the private link for this one Break Relay"
+                height="360"
+                src={qrDataUrl}
+                width="360"
+              />
+            ) : (
+              <div className="qr-placeholder" role="status">
+                <RelayMark />
+                <strong>
+                  {qrFailed ? "QR unavailable" : "Preparing QR…"}
+                </strong>
+                <span>The copy and open-link options remain available.</span>
+              </div>
+            )}
+            <p>
+              The QR contains this one break—space name, places, prompts, and
+              route included. Treat it as private.
+            </p>
+          </section>
+
+          <section className="handoff-details">
+            <div className="handoff-summary-card">
+              <p className="eyebrow">PREPARED FROM {handoff.space.name}</p>
+              <dl>
+                <div>
+                  <dt>Need</dt>
+                  <dd>{feeling?.label}</dd>
+                </div>
+                <div>
+                  <dt>Boundary</dt>
+                  <dd>{handoff.durationMinutes} minutes</dd>
+                </div>
+                <div>
+                  <dt>Movement</dt>
+                  <dd>{movement?.label}</dd>
+                </div>
+                <div>
+                  <dt>Available now</dt>
+                  <dd>
+                    {handoff.eligibleStations.length}{" "}
+                    {handoff.eligibleStations.length === 1
+                      ? "place"
+                      : "places"}
+                  </dd>
+                </div>
+              </dl>
+              <ol aria-label="Prepared break rhythm">
+                {handoff.route.map((step) => (
+                  <li key={step.id}>
+                    <span>{phaseKicker(step.phase)}</span>
+                    <strong>{step.station.name}</strong>
+                  </li>
+                ))}
+              </ol>
+            </div>
+
+            <div className="handoff-link-card">
+              <label htmlFor="handoff-link">Private handoff link</label>
+              <input
+                id="handoff-link"
+                onFocus={(event) => event.currentTarget.select()}
+                readOnly
+                ref={linkInput}
+                value={link}
+              />
+              <div>
+                <button
+                  className="secondary-button"
+                  disabled={expired}
+                  onClick={copyLink}
+                  type="button"
+                >
+                  Copy link
+                </button>
+                <a
+                  aria-disabled={expired}
+                  className={`secondary-button ${
+                    expired ? "is-disabled" : ""
+                  }`}
+                  href={expired ? undefined : link}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  Open link
+                </a>
+              </div>
+              <p aria-live="polite">{copyStatus}</p>
+            </div>
+
+            <div className="handoff-honesty">
+              <Icon name="spark" size={20} />
+              <p>
+                The payload stays after <strong>#</strong> in the link, so it is
+                not sent to Relay’s server. There is no account, backend,
+                delivery receipt, remote control, or enforceable single-use
+                lock. Start on one receiving device, then close this view.
+              </p>
+            </div>
+
+            <button
+              className="primary-button primary-button--coral primary-button--wide"
+              onClick={onRegenerate}
+              type="button"
+            >
+              <Icon name="repeat" size={18} />
+              {expired ? "Regenerate this handoff" : "Regenerate private link"}
+            </button>
+          </section>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function HandoffReceive({
+  handoff,
+  onCancel,
+  onStart,
+}: {
+  handoff: BreakHandoff;
+  onCancel: () => void;
+  onStart: (options: { audioEnabled: boolean; keepAwake: boolean }) => void;
+}) {
+  const capabilities = useMemo(getRelayCapabilities, []);
+  const [spokenCues, setSpokenCues] = useState(capabilities.speech);
+  const [keepAwake, setKeepAwake] = useState(false);
+  const [now, setNow] = useState(Date.now());
+  const expired = now >= handoff.expiresAt;
+  const feeling = FEELINGS.find((item) => item.id === handoff.feeling);
+  const movement = SPACE_MODES.find(
+    (item) => item.id === handoff.space.spaceMode,
+  );
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <main className="handoff-page handoff-receive-page">
+      <header className="setup-header">
+        <Brand />
+        <button className="text-button" onClick={onCancel} type="button">
+          Don’t start
+        </button>
+      </header>
+      <section className="handoff-receive-shell">
+        <div className="handoff-receive-intro">
+          <p className="eyebrow">HANDED OFF FROM {handoff.space.name}</p>
+          <h1>One prepared break. Start it here?</h1>
+          <p className="lede">
+            The private link has been removed from this address. Nothing has
+            started, and your own Relay spaces, preferences, and route learning
+            have not been changed.
+          </p>
+        </div>
+
+        <div className="receive-grid">
+          <section className="receive-preview" aria-label="Received break preview">
+            <div className="receive-boundary">
+              <strong>{handoff.durationMinutes}</strong>
+              <span>minute boundary</span>
+            </div>
+            <dl>
+              <div>
+                <dt>Need</dt>
+                <dd>{feeling?.label}</dd>
+              </div>
+              <div>
+                <dt>Movement</dt>
+                <dd>{movement?.label}</dd>
+              </div>
+              <div>
+                <dt>Available now</dt>
+                <dd>
+                  {handoff.eligibleStations.length || "No-travel"}{" "}
+                  {handoff.eligibleStations.length === 1 ? "place" : "places"}
+                </dd>
+              </div>
+              <div>
+                <dt>Link expires</dt>
+                <dd>
+                  {expired
+                    ? "Expired"
+                    : `In ${handoffMinutesRemaining(
+                        handoff.expiresAt,
+                        now,
+                      )} min`}
+                </dd>
+              </div>
+            </dl>
+            <ol aria-label="Exact received route">
+              {handoff.route.map((step) => (
+                <li key={step.id}>
+                  <span>{phaseKicker(step.phase)}</span>
+                  <strong>{step.station.name}</strong>
+                  <small>{Math.ceil(step.durationSeconds / 60)} min</small>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          <section className="receive-capabilities">
+            <p className="eyebrow">THIS DEVICE’S CUES</p>
+            <h2>Use what is actually available here.</h2>
+            <div className="receiver-option">
+              <div>
+                <strong>
+                  {capabilities.speech
+                    ? "Spoken + visible cues"
+                    : "Visible cues only"}
+                </strong>
+                <p>
+                  {capabilities.speech
+                    ? "Speech is available in this browser. Background or locked-screen delivery is still not guaranteed."
+                    : capabilities.vibration
+                      ? "Speech is unavailable. Large visible cues and supported vibration will be used."
+                      : "Speech and vibration are unavailable. Keep the large cue page visible when possible."}
+                </p>
+              </div>
+              {capabilities.speech && (
+                <label className="switch">
+                  <span className="sr-only">Spoken cues on this device</span>
+                  <input
+                    checked={spokenCues}
+                    onChange={(event) => setSpokenCues(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span aria-hidden="true" />
+                </label>
+              )}
+            </div>
+            <div className="receiver-option">
+              <div>
+                <strong>
+                  {capabilities.wakeLock
+                    ? "Optional screen wake"
+                    : "Normal screen sleep"}
+                </strong>
+                <p>
+                  {capabilities.wakeLock
+                    ? "This device can request a dim, awake display while Relay is visible."
+                    : "This browser cannot keep the screen awake. The route will recover to the correct phase when reopened."}
+                </p>
+              </div>
+              {capabilities.wakeLock && (
+                <label className="switch">
+                  <span className="sr-only">
+                    Keep this received session awake
+                  </span>
+                  <input
+                    checked={keepAwake}
+                    onChange={(event) => setKeepAwake(event.target.checked)}
+                    type="checkbox"
+                  />
+                  <span aria-hidden="true" />
+                </label>
+              )}
+            </div>
+            <div className="receive-private-note">
+              <Icon name="spark" size={20} />
+              <p>
+                This route remains a temporary guest on this device. It will
+                not create a space or enter space-specific learning.
+              </p>
+            </div>
+            {expired ? (
+              <div className="receive-expired" role="alert">
+                This handoff has expired. Ask the sender to regenerate it; no
+                break was started.
+              </div>
+            ) : (
+              <button
+                className="primary-button primary-button--coral primary-button--wide"
+                onClick={() =>
+                  onStart({
+                    audioEnabled: spokenCues && capabilities.speech,
+                    keepAwake: keepAwake && capabilities.wakeLock,
+                  })
+                }
+                type="button"
+              >
+                <Icon name="play" size={18} />
+                Start on this device
+              </button>
+            )}
+            <p className="receive-start-note">
+              The durable session and first real cue are created only by this
+              action. Start on one receiving device.
+            </p>
+          </section>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function HandoffErrorScreen({
+  reason,
+  hasSetup,
+  onContinue,
+}: {
+  reason: HandoffFailure;
+  hasSetup: boolean;
+  onContinue: () => void;
+}) {
+  const messages: Record<HandoffFailure, { title: string; body: string }> = {
+    expired: {
+      title: "This handoff has expired.",
+      body: "Handoff links last 15 minutes. Ask the sender to regenerate the prepared break.",
+    },
+    oversized: {
+      title: "This handoff is too large to open safely.",
+      body: "The private payload exceeded Relay’s local safety limit. Ask the sender for a new handoff.",
+    },
+    unsupported: {
+      title: "This handoff needs a different Relay version.",
+      body: "This browser cannot safely read that payload version. Refresh the app or ask the sender to regenerate it.",
+    },
+    corrupt: {
+      title: "This handoff could not be read.",
+      body: "The private link may be incomplete or changed. Ask the sender to copy or regenerate it.",
+    },
+  };
+  const message = messages[reason];
+  return (
+    <main className="handoff-error-page">
+      <header className="setup-header">
+        <Brand />
+      </header>
+      <section className="handoff-error-shell">
+        <span className="handoff-error-icon" aria-hidden="true">
+          <Icon name="spark" size={30} />
+        </span>
+        <p className="eyebrow">CALM RECOVERY</p>
+        <h1>{message.title}</h1>
+        <p className="lede">{message.body}</p>
+        <div className="handoff-error-note">
+          No break was started. Your setup, preferences, active space, and route
+          learning were not changed.
+        </div>
+        <button
+          className="primary-button primary-button--coral"
+          onClick={onContinue}
+          type="button"
+        >
+          {hasSetup ? "Continue to my Relay" : "Set up my own Relay"}
+          <Icon name="arrow" size={18} />
+        </button>
+      </section>
     </main>
   );
 }
@@ -2247,11 +2756,13 @@ function RelaySession({
 function Completion({
   session,
   interrupted,
+  transferred,
   onExtend,
   onOutcome,
 }: {
   session: ActiveSession;
   interrupted: boolean;
+  transferred: boolean;
   onExtend: () => void;
   onOutcome: (outcome: RouteOutcome) => void;
 }) {
@@ -2293,32 +2804,50 @@ function Completion({
         </p>
 
         <div className="return-choices">
-          <button
-            className="primary-button primary-button--coral return-primary"
-            onClick={() => onOutcome("useful")}
-            type="button"
-          >
-            <span>
-              <Icon name="check" />
-            </span>
-            <span>
-              <strong>This route gave me a reset</strong>
-              <small>Remember what fit and return</small>
-            </span>
-          </button>
-          <button
-            className="return-secondary return-secondary--not-fit"
-            onClick={() => onOutcome("not_fit")}
-            type="button"
-          >
-            <span className="return-choice-icon">
-              <Icon name="close" size={18} />
-            </span>
-            <span>
-              <strong>This route didn’t fit</strong>
-              <small>Gently vary these choices next time</small>
-            </span>
-          </button>
+          {transferred ? (
+            <button
+              className="primary-button primary-button--coral return-primary"
+              onClick={() => onOutcome("unrated")}
+              type="button"
+            >
+              <span>
+                <Icon name="check" />
+              </span>
+              <span>
+                <strong>Finish this handed-off break</strong>
+                <small>Leave the guest route unsaved</small>
+              </span>
+            </button>
+          ) : (
+            <>
+              <button
+                className="primary-button primary-button--coral return-primary"
+                onClick={() => onOutcome("useful")}
+                type="button"
+              >
+                <span>
+                  <Icon name="check" />
+                </span>
+                <span>
+                  <strong>This route gave me a reset</strong>
+                  <small>Remember what fit and return</small>
+                </span>
+              </button>
+              <button
+                className="return-secondary return-secondary--not-fit"
+                onClick={() => onOutcome("not_fit")}
+                type="button"
+              >
+                <span className="return-choice-icon">
+                  <Icon name="close" size={18} />
+                </span>
+                <span>
+                  <strong>This route didn’t fit</strong>
+                  <small>Gently vary these choices next time</small>
+                </span>
+              </button>
+            </>
+          )}
           {!session.extensionUsed && !session.endedEarly && (
             <button className="return-secondary" onClick={onExtend} type="button">
               <span className="plus-two">+2</span>
@@ -2328,16 +2857,20 @@ function Completion({
               </span>
             </button>
           )}
-          <button
-            className="finish-link"
-            onClick={() => onOutcome("unrated")}
-            type="button"
-          >
-            Leave without rating
-          </button>
+          {!transferred && (
+            <button
+              className="finish-link"
+              onClick={() => onOutcome("unrated")}
+              type="button"
+            >
+              Leave without rating
+            </button>
+          )}
         </div>
         <p className="completion-note">
-          {session.skippedStepIds.length > 0
+          {transferred
+            ? "This handed-off break remains ephemeral. It did not create a named space or add to route learning on this device."
+            : session.skippedStepIds.length > 0
             ? "Skipped or unreached action phases stay neutral. Relay learns only from what you used and explicitly chose."
             : "This choice shapes route variety only. It is not a health or productivity assessment."}
         </p>
@@ -2347,6 +2880,7 @@ function Completion({
 }
 
 export default function App() {
+  const initialHandoffCapture = useMemo(captureHandoffFromLocation, []);
   const initial = useMemo(loadPreferences, []);
   const recovered = useMemo(loadSession, []);
   const initialRouteMemory = useMemo(
@@ -2363,6 +2897,10 @@ export default function App() {
       ? recovered.status === "complete"
         ? "complete"
         : "recover"
+      : initialHandoffCapture.status === "ready"
+        ? "handoffReceive"
+        : initialHandoffCapture.status === "error"
+          ? "handoffError"
       : initial.hasOnboarded
         ? "home"
         : "stations",
@@ -2372,6 +2910,17 @@ export default function App() {
   const [session, setSession] = useState<ActiveSession | null>(recovered);
   const [routeMemory, setRouteMemory] = useState(initialRouteMemory);
   const [unavailableNow, setUnavailableNow] = useState<string[]>([]);
+  const [handoff, setHandoff] = useState<BreakHandoff | null>(
+    initialHandoffCapture.status === "ready"
+      ? initialHandoffCapture.handoff
+      : null,
+  );
+  const [handoffFailure, setHandoffFailure] =
+    useState<HandoffFailure | null>(
+      initialHandoffCapture.status === "error"
+        ? initialHandoffCapture.reason
+        : null,
+    );
   const [interruptedCompletion, setInterruptedCompletion] = useState(
     recovered?.status === "complete",
   );
@@ -2381,8 +2930,13 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (preferences.hasOnboarded) savePreferences(preferences);
-  }, [preferences]);
+    if (
+      initialHandoffCapture.status === "none" &&
+      preferences.hasOnboarded
+    ) {
+      savePreferences(preferences);
+    }
+  }, [initialHandoffCapture.status, preferences]);
 
   useEffect(() => {
     function acceptOtherTabChange(event: StorageEvent) {
@@ -2410,6 +2964,18 @@ export default function App() {
         setSettingsOpen(false);
         setEditing(false);
         setScreen(loadPreferences().hasOnboarded ? "home" : "stations");
+      }
+      if (event.key === SESSION_STORAGE_KEY && event.newValue !== null) {
+        const next = loadSession();
+        if (next && next.id !== session?.id) {
+          window.speechSynthesis?.cancel?.();
+          setSession(next);
+          setUnavailableNow([]);
+          launchingRef.current = false;
+          setSettingsOpen(false);
+          setEditing(false);
+          setScreen(next.status === "complete" ? "complete" : "recover");
+        }
       }
       if (event.key === ROUTE_MEMORY_STORAGE_KEY) {
         setRouteMemory(
@@ -2441,12 +3007,18 @@ export default function App() {
   }, []);
 
   const flagSessionCapabilityFailure = useCallback(
-    (sessionId: string, kind: "speech" | "wake") => {
-      setPreferences((current) => {
-        const next = { ...current, launchNeedsReview: true };
-        savePreferences(next);
-        return next;
-      });
+    (
+      sessionId: string,
+      kind: "speech" | "wake",
+      rememberForLaunch = true,
+    ) => {
+      if (rememberForLaunch) {
+        setPreferences((current) => {
+          const next = { ...current, launchNeedsReview: true };
+          savePreferences(next);
+          return next;
+        });
+      }
       setSession((current) => {
         if (!current || current.id !== sessionId) return current;
         const next = {
@@ -2475,6 +3047,77 @@ export default function App() {
     setScreen("readiness");
   }
 
+  function prepareRouteSnapshot(
+    source: Preferences,
+    sourceSpace: RelaySpace,
+    seed: number,
+  ) {
+    const compatibleStations = stationsForSpaceMode(
+      sourceSpace.stations,
+      sourceSpace.spaceMode,
+    );
+    const eligibleStations = availableStations(
+      sourceSpace.stations,
+      sourceSpace.spaceMode,
+      unavailableNow,
+    );
+    const route =
+      eligibleStations.length > 0
+        ? buildRoute(
+            eligibleStations,
+            source.feeling,
+            source.duration,
+            seed,
+            {
+              history: routeMemory.entries,
+              spaceMode: sourceSpace.spaceMode,
+              spaceId: sourceSpace.id,
+            },
+          )
+        : buildNoTravelRoute(
+            source.feeling,
+            source.duration,
+            sourceSpace.spaceMode,
+          );
+    return {
+      compatibleStations,
+      eligibleStations,
+      route,
+      unavailableStationIds: compatibleStations
+        .filter((station) => unavailableNow.includes(station.id))
+        .map((station) => station.id),
+    };
+  }
+
+  function prepareHandoff() {
+    if (session?.status === "active") return;
+    const now = Date.now();
+    const sourceSpace = activeRelaySpace(preferences);
+    const prepared = prepareRouteSnapshot(preferences, sourceSpace, now);
+    const next = createBreakHandoff({
+      space: sourceSpace,
+      feeling: preferences.feeling,
+      durationMinutes: preferences.duration,
+      route: prepared.route,
+      eligibleStations: prepared.eligibleStations,
+      unavailableStationIds: prepared.unavailableStationIds,
+      now,
+    });
+    try {
+      handoffUrl(
+        next,
+        `${window.location.origin}${window.location.pathname}`,
+      );
+      setHandoff(next);
+      setHandoffFailure(null);
+      setScreen("handoffSource");
+    } catch {
+      setHandoff(null);
+      setHandoffFailure("oversized");
+      setScreen("handoffError");
+    }
+  }
+
   function startRelay(
     source: Preferences,
     sourceSpace: RelaySpace,
@@ -2485,15 +3128,8 @@ export default function App() {
     },
   ) {
     if (launchingRef.current || session?.status === "active") return;
-    const compatibleStations = stationsForSpaceMode(
-      sourceSpace.stations,
-      sourceSpace.spaceMode,
-    );
-    const activeStations = availableStations(
-      sourceSpace.stations,
-      sourceSpace.spaceMode,
-      unavailableNow,
-    );
+    const now = Date.now();
+    const prepared = prepareRouteSnapshot(source, sourceSpace, now);
     launchingRef.current = true;
     const nextPreferences = {
       ...source,
@@ -2512,24 +3148,7 @@ export default function App() {
     };
     updatePreferences(nextPreferences);
     setDraft(nextPreferences);
-    const route =
-      activeStations.length > 0
-        ? buildRoute(
-            activeStations,
-            nextPreferences.feeling,
-            nextPreferences.duration,
-            Date.now(),
-            {
-              history: routeMemory.entries,
-              spaceMode: sourceSpace.spaceMode,
-              spaceId: sourceSpace.id,
-            },
-          )
-        : buildNoTravelRoute(
-            nextPreferences.feeling,
-            nextPreferences.duration,
-            sourceSpace.spaceMode,
-          );
+    const route = prepared.route;
     let nextSession = createSession({
       route,
       durationMinutes: nextPreferences.duration,
@@ -2553,10 +3172,9 @@ export default function App() {
             action: step.action,
           })),
       },
-      eligibleStations: activeStations,
-      unavailableStationIds: compatibleStations
-        .filter((station) => unavailableNow.includes(station.id))
-        .map((station) => station.id),
+      eligibleStations: prepared.eligibleStations,
+      unavailableStationIds: prepared.unavailableStationIds,
+      now,
       spaceSnapshot: sourceSpace,
     });
     nextSession = markCueAnnounced(nextSession);
@@ -2566,6 +3184,66 @@ export default function App() {
     if (options.audioEnabled) {
       speak(route[0].spokenCue, () =>
         flagSessionCapabilityFailure(nextSession.id, "speech"),
+      );
+    } else {
+      navigator.vibrate?.([120, 80, 120]);
+    }
+  }
+
+  function startReceivedHandoff(options: {
+    audioEnabled: boolean;
+    keepAwake: boolean;
+  }) {
+    if (!handoff || launchingRef.current) return;
+    if (Date.now() >= handoff.expiresAt) {
+      setHandoffFailure("expired");
+      setScreen("handoffError");
+      return;
+    }
+    const existing = loadSession();
+    if (existing) {
+      setSession(existing);
+      setInterruptedCompletion(existing.status === "complete");
+      setScreen(existing.status === "complete" ? "complete" : "recover");
+      return;
+    }
+    launchingRef.current = true;
+    let nextSession = createSession({
+      id: `handoff:${handoff.id}`,
+      source: "handoff",
+      route: structuredClone(handoff.route),
+      durationMinutes: handoff.durationMinutes,
+      audioEnabled: options.audioEnabled && canUseSpeech(),
+      keepAwake: options.keepAwake && getRelayCapabilities().wakeLock,
+      routeContext: {
+        spaceId: handoff.space.id,
+        feeling: handoff.feeling,
+        spaceMode: handoff.space.spaceMode,
+        steps: handoff.route
+          .filter(
+            (step) =>
+              step.phase === "arrive" ||
+              (step.phase === "quiet" &&
+                step.station.id !== "comfortable-pause"),
+          )
+          .map((step) => ({
+            stepId: step.id,
+            stationId: step.station.id,
+            stationName: step.station.name,
+            action: step.action,
+          })),
+      },
+      eligibleStations: structuredClone(handoff.eligibleStations),
+      unavailableStationIds: [...handoff.unavailableStationIds],
+      spaceSnapshot: structuredClone(handoff.space),
+    });
+    nextSession = markCueAnnounced(nextSession);
+    commitSession(nextSession);
+    setInterruptedCompletion(false);
+    setScreen("session");
+    if (nextSession.audioEnabled) {
+      speak(nextSession.route[0].spokenCue, () =>
+        flagSessionCapabilityFailure(nextSession.id, "speech", false),
       );
     } else {
       navigator.vibrate?.([120, 80, 120]);
@@ -2587,7 +3265,7 @@ export default function App() {
     setSession(null);
     setUnavailableNow([]);
     launchingRef.current = false;
-    setScreen("home");
+    setScreen(preferences.hasOnboarded ? "home" : "stations");
     setInterruptedCompletion(false);
   }
 
@@ -2601,7 +3279,7 @@ export default function App() {
       },
       outcome,
     );
-    if (entry) {
+    if (entry && session.source !== "handoff") {
       setRouteMemory((current) => {
         const next = appendRouteHistory(current, entry);
         saveRouteMemory(next);
@@ -2609,6 +3287,59 @@ export default function App() {
       });
     }
     returnHome();
+  }
+
+  if (screen === "handoffSource" && handoff) {
+    return (
+      <HandoffSource
+        handoff={handoff}
+        onClose={() => {
+          setHandoff(null);
+          setScreen(preferences.hasOnboarded ? "home" : "stations");
+        }}
+        onRegenerate={() => {
+          const next = regenerateBreakHandoff(handoff);
+          try {
+            handoffUrl(
+              next,
+              `${window.location.origin}${window.location.pathname}`,
+            );
+            setHandoff(next);
+          } catch {
+            setHandoff(null);
+            setHandoffFailure("oversized");
+            setScreen("handoffError");
+          }
+        }}
+      />
+    );
+  }
+
+  if (screen === "handoffReceive" && handoff) {
+    return (
+      <HandoffReceive
+        handoff={handoff}
+        onCancel={() => {
+          setHandoff(null);
+          setScreen(preferences.hasOnboarded ? "home" : "stations");
+        }}
+        onStart={startReceivedHandoff}
+      />
+    );
+  }
+
+  if (screen === "handoffError" && handoffFailure) {
+    return (
+      <HandoffErrorScreen
+        hasSetup={preferences.hasOnboarded}
+        onContinue={() => {
+          setHandoff(null);
+          setHandoffFailure(null);
+          setScreen(preferences.hasOnboarded ? "home" : "stations");
+        }}
+        reason={handoffFailure}
+      />
+    );
   }
 
   if (screen === "stations") {
@@ -2680,7 +3411,7 @@ export default function App() {
           setSession(null);
           setUnavailableNow([]);
           launchingRef.current = false;
-          setScreen("home");
+          setScreen(preferences.hasOnboarded ? "home" : "stations");
         }}
         onResume={() => {
           let current = reconcileSession(session);
@@ -2716,7 +3447,11 @@ export default function App() {
         fallbackSpaceMode={session.spaceSnapshot.spaceMode}
         key={session.id}
         onCapabilityFailure={(kind) =>
-          flagSessionCapabilityFailure(session.id, kind)
+          flagSessionCapabilityFailure(
+            session.id,
+            kind,
+            session.source !== "handoff",
+          )
         }
         onChange={commitSession}
         onFinish={finishSession}
@@ -2748,6 +3483,7 @@ export default function App() {
         }}
         onOutcome={completeWithOutcome}
         session={session}
+        transferred={session.source === "handoff"}
       />
     );
   }
@@ -2758,6 +3494,7 @@ export default function App() {
         onAvailabilityChange={setUnavailableNow}
         onChange={updatePreferences}
         onReview={() => openReadiness(preferences, "home")}
+        onHandoff={prepareHandoff}
         onSettings={() => setSettingsOpen(true)}
         onStart={() => {
           if (needsLaunchReview(preferences)) {

@@ -55,6 +55,7 @@ export function createSession({
   rerouteCount = 0,
   now = Date.now(),
   id,
+  source = "local",
   spaceSnapshot = initialRelaySpace(),
 }: {
   route: RouteStep[];
@@ -71,13 +72,15 @@ export function createSession({
   rerouteCount?: number;
   now?: number;
   id?: string;
+  source?: ActiveSession["source"];
   spaceSnapshot?: RelaySpace;
 }): ActiveSession {
   if (route.length === 0) throw new Error("A relay needs at least one step.");
   const firstStepMs = route[0].durationSeconds * SECOND;
   return {
-    version: 6,
+    version: 7,
     id: id ?? createSessionId(now),
+    source,
     spaceSnapshot: structuredClone(spaceSnapshot),
     route,
     routeContext,
@@ -387,6 +390,7 @@ export function replaceWithExtension(
       neutralStepIds: session.neutralStepIds,
       now,
       id: session.id,
+      source: session.source,
       spaceSnapshot: session.spaceSnapshot,
     }),
     extensionUsed: true,

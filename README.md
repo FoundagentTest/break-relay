@@ -45,6 +45,12 @@ and a bounded space-aware route-learning history are stored only in browser
 saved stations; resetting local data clears every space, session, and history
 record.
 
+An optional private device handoff can carry one already-composed break in a
+short-lived URL fragment. Preparing it does not start the source session; the
+receiver previews and explicitly starts with its own device capabilities.
+Transferred spaces remain ephemeral and do not alter receiver setup or route
+learning. See [docs/device-handoff.md](docs/device-handoff.md).
+
 Route composition uses distinct move, arrival, quiet, and return phases. Longer
 boundaries add quiet at one suitable place instead of padding quick actions or
 inventing extra travel; see [docs/route-composition.md](docs/route-composition.md).

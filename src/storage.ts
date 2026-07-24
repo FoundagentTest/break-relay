@@ -378,7 +378,8 @@ function normalizeSession(
       session.version === 3 ||
       session.version === 4 ||
       session.version === 5 ||
-      session.version === 6) &&
+      session.version === 6 ||
+      session.version === 7) &&
     typeof session.id === "string" &&
     normalizedRoute.length > 0 &&
     normalizedRoute.every(
@@ -461,6 +462,7 @@ function normalizeSession(
     ...(session as Omit<
       ActiveSession,
       | "version"
+      | "source"
       | "spaceSnapshot"
       | "routeContext"
       | "skippedStepIds"
@@ -472,7 +474,8 @@ function normalizeSession(
       | "cueDeliveryFailed"
       | "wakeLockFailed"
     >),
-    version: 6,
+    version: 7,
+    source: session.source === "handoff" ? "handoff" : "local",
     spaceSnapshot,
     route,
     routeContext,

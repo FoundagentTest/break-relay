@@ -212,6 +212,7 @@ export function createRouteHistoryEntry(
   outcome: RouteOutcome,
   completedAt = Date.now(),
 ): RouteHistoryEntry | null {
+  if (session.source === "handoff") return null;
   const context = session.routeContext;
   const sourceSteps =
     context?.steps ??

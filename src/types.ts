@@ -93,8 +93,9 @@ export interface SessionRouteContext {
 }
 
 export interface ActiveSession {
-  version: 6;
+  version: 7;
   id: string;
+  source: "local" | "handoff";
   spaceSnapshot: RelaySpace;
   route: RouteStep[];
   routeContext: SessionRouteContext | null;
