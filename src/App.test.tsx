@@ -2,7 +2,10 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { capabilitySignature } from "./readiness";
+import {
+  capabilitySignature,
+  formatLocalReturnTime,
+} from "./readiness";
 import { buildRoute, DEFAULT_PREFERENCES, STATION_PRESETS } from "./data";
 import { completeSession, createSession, skipStep } from "./session";
 import { ROUTE_MEMORY_STORAGE_KEY } from "./routeMemory";
@@ -1030,6 +1033,7 @@ describe("Break Relay", () => {
 
   it("keeps one active route and exposes fallback when the first cue fails", async () => {
     const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
     vi.mocked(window.speechSynthesis.speak).mockImplementationOnce(
       (utterance) => {
         utterance.onerror?.({
@@ -1055,12 +1059,30 @@ describe("Break Relay", () => {
     );
 
     render(<App />);
+    expect(screen.getByText("Local return time")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    ).toBeEnabled();
+    await user.click(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    );
+    expect(await screen.findByText("Exact return time copied.")).toBeVisible();
+    expect(writeText).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /^Break Relay return time: .+\. If you need a locked-screen alert, set a 5-minute device timer now\./,
+      ),
+    );
+
     await user.click(screen.getByRole("button", { name: "Begin my break" }));
 
     expect(screen.getByText(/Voice did not start/i)).toBeVisible();
     expect(
       screen.getByText(/independent chime and visible cue remain active/i),
     ).toBeVisible();
+    expect(screen.getByText("Local return time")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    ).toBeEnabled();
     const failedSession = JSON.parse(
       localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
     );
@@ -1073,11 +1095,72 @@ describe("Break Relay", () => {
       lastAnnouncedStepId: failedSession.route[0].id,
     });
     expect(
+      screen.getByText(formatLocalReturnTime(failedSession.deadlineAt)),
+    ).toBeVisible();
+    await user.click(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    );
+    expect(writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining(
+        `Break Relay return time: ${formatLocalReturnTime(
+          failedSession.deadlineAt,
+        )}.`,
+      ),
+    );
+    expect(
       JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").audioEnabled,
     ).toBe(false);
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
     await user.click(screen.getByRole("button", { name: "Repeat cue" }));
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps one exact-time action visible for persisted active chime and wake failures", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.spyOn(navigator.clipboard, "writeText");
+    const route = buildRoute(STATION_PRESETS.slice(0, 3), "noise", 5, 84);
+    const failedSession = {
+      ...createSession({
+        route,
+        durationMinutes: 5,
+        cueSoundEnabled: true,
+        audioEnabled: false,
+        keepAwake: true,
+      }),
+      cueDeliveryFailed: true,
+      wakeLockFailed: true,
+    };
+    saveSession(failedSession);
+
+    render(<App />);
+    await user.click(
+      screen.getByRole("button", { name: /Resume this relay/i }),
+    );
+
+    expect(
+      screen.getByText(/The chime failed during this relay/i),
+    ).toBeVisible();
+    expect(
+      screen.getByText(/Screen wake could not be maintained/i),
+    ).toBeVisible();
+    expect(
+      screen.getByText(formatLocalReturnTime(failedSession.deadlineAt)),
+    ).toBeVisible();
+    expect(
+      screen.getAllByRole("button", { name: "Copy exact return time" }),
+    ).toHaveLength(1);
+
+    await user.click(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    );
+    expect(await screen.findByText("Exact return time copied.")).toBeVisible();
+    expect(writeText).toHaveBeenLastCalledWith(
+      expect.stringContaining(
+        `Break Relay return time: ${formatLocalReturnTime(
+          failedSession.deadlineAt,
+        )}.`,
+      ),
+    );
   });
 
   it("stops before departure when chime playback rejects and offers an exact visual-only fallback", async () => {

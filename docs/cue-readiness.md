@@ -26,6 +26,13 @@ Visual-only launch is an explicit fallback. Readiness shows the exact projected
 local return time, says that Relay has not created an alarm or notification,
 and provides one-action copy text with concise device-timer guidance.
 
+Home exposes the same live projected return time and copy action before a
+recently verified one-action launch. If a chime, optional voice, or screen-wake
+failure occurs after the session is created, the active relay keeps one copy
+action beside the persisted failure state. That action uses the session's
+absolute `deadlineAt` and the remaining timer duration rather than restarting
+the original break length.
+
 ## Session delivery and recovery
 
 The session stores the IDs of automatically issued phase cues plus one final

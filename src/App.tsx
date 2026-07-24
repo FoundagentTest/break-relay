@@ -1362,6 +1362,7 @@ function Home({
   onSpaceSwitch: (spaceId: string) => void;
 }) {
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
+  const [homeNow, setHomeNow] = useState(Date.now());
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
   const capabilities = getRelayCapabilities();
   const checkIsFresh = freshCapabilityCheck(
@@ -1394,6 +1395,12 @@ function Home({
   );
   const incompatibleCount =
     activeSpace.stations.length - compatibleStations.length;
+  const projectedDeadline = homeNow + preferences.duration * 60_000;
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setHomeNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   function toggleAvailability(stationId: string) {
     onAvailabilityChange(
@@ -1610,15 +1617,11 @@ function Home({
                 Review or change
               </button>
             </div>
-            <p className="launch-boundary">
-              Starting now returns at{" "}
-              <strong>
-                {formatLocalReturnTime(
-                  Date.now() + preferences.duration * 60_000,
-                )}
-              </strong>
-              . This is a local clock time, not a notification or alarm.
-            </p>
+            <ReturnTimeBackup
+              compact
+              deadlineAt={projectedDeadline}
+              durationMinutes={preferences.duration}
+            />
             {preferences.alwaysReviewLaunch && (
               <p className="always-review-note">
                 Launch review is required before every relay.
@@ -3018,6 +3021,10 @@ function RelaySession({
   }, [announce, finish]);
 
   const totalRemaining = Math.ceil(remainingMs(session, clock) / 1000);
+  const wakeFailed =
+    session.keepAwake &&
+    (wakeStatus === "failed" || session.wakeLockFailed);
+  const needsReturnBackup = cueFailed || speechFailed || wakeFailed;
 
   function togglePause() {
     const current = sessionRef.current;
@@ -3179,8 +3186,28 @@ function RelaySession({
             <p>
               <strong>Voice did not start.</strong> The independent chime and
               visible cue remain active; speech has been turned off for this
-              relay.
+              relay. Use the exact return-time backup below if you need a
+              device alert.
             </p>
+          </div>
+        )}
+        {wakeFailed && (
+          <div className="fallback-banner" role="status">
+            <Icon name="spark" size={18} />
+            <p>
+              <strong>Screen wake could not be maintained.</strong> The display
+              may sleep even though the route clock continues. Use the exact
+              return-time backup below before leaving this screen.
+            </p>
+          </div>
+        )}
+        {needsReturnBackup && (
+          <div className="session-return-backup">
+            <ReturnTimeBackup
+              compact
+              deadlineAt={session.deadlineAt}
+              durationMinutes={Math.max(1, Math.ceil(totalRemaining / 60))}
+            />
           </div>
         )}
 
@@ -3250,13 +3277,11 @@ function RelaySession({
               </div>
             </details>
           )}
-        {session.keepAwake && (
+        {session.keepAwake && !wakeFailed && (
           <p className={`wake-status wake-status--${wakeStatus}`} role="status">
             {wakeStatus === "held"
               ? "Dim screen is being kept awake while this page is visible."
-              : wakeStatus === "failed"
-                ? "This device declined the wake request; the route clock still continues."
-                : "Preparing the dim wake surface…"}
+              : "Preparing the dim wake surface…"}
           </p>
         )}
         <p className="session-footnote">

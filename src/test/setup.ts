@@ -69,3 +69,10 @@ Object.defineProperty(navigator, "vibrate", {
   configurable: true,
   value: vi.fn(),
 });
+
+Object.defineProperty(navigator, "clipboard", {
+  configurable: true,
+  value: {
+    writeText: vi.fn().mockResolvedValue(undefined),
+  },
+});

@@ -1621,6 +1621,21 @@ a:focus-visible {
   line-height: 1.5;
 }
 
+.ready-card .return-backup {
+  margin-top: 14px;
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ready-card .return-backup p,
+.ready-card .return-backup > span {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.ready-card .return-backup time {
+  color: var(--white);
+}
+
 .always-review-note {
   color: var(--lime);
 }
@@ -2309,6 +2324,25 @@ a:focus-visible {
 .fallback-banner--quiet {
   border-color: rgba(255, 255, 255, 0.13);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.session-return-backup {
+  width: min(680px, 100%);
+  margin-top: 12px;
+}
+
+.session-return-backup .return-backup {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.session-return-backup .return-backup p,
+.session-return-backup .return-backup > span {
+  color: rgba(255, 255, 255, 0.66);
+}
+
+.session-return-backup .return-backup time {
+  color: var(--white);
 }
 
 .session-controls {
@@ -3338,7 +3372,7 @@ a:focus-visible {
 }
 
 .return-backup .secondary-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 9px 13px;
   color: var(--ink);
   font-size: 0.65rem;
@@ -3669,6 +3703,7 @@ a:focus-visible {
   .start-button,
   .handoff-button,
   .launch-summary,
+  .ready-card .return-backup,
   .launch-boundary,
   .always-review-note {
     grid-column: 2;
