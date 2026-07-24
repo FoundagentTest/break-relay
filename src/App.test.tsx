@@ -138,6 +138,108 @@ describe("Break Relay", () => {
     });
   });
 
+  it("removes incompatible places when switching to low movement and launches safely", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Doorway/ }));
+    await user.click(screen.getByRole("button", { name: /Hallway/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Outside step/ }),
+    );
+    expect(screen.getByText("3 / 3 minimum")).toBeVisible();
+
+    await user.click(screen.getByText("Low movement", { exact: true }));
+
+    expect(screen.getByText("0 / 3 minimum")).toBeVisible();
+    expect(
+      screen.getByText(/3 places were removed because they are not available/i),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /Shape my relay/ }),
+    ).toBeDisabled();
+    const selectedRoute = screen.getByRole("complementary", {
+      name: "Your selected route",
+    });
+    expect(within(selectedRoute).queryByText("Doorway")).not.toBeInTheDocument();
+    expect(within(selectedRoute).queryByText("Hallway")).not.toBeInTheDocument();
+    expect(
+      within(selectedRoute).queryByText("Outside step"),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: /Window or view/ }),
+    );
+    await user.click(screen.getByRole("button", { name: /Water stop/ }));
+    await user.click(
+      screen.getByRole("button", { name: /Chair turned away/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Shape my relay/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Start this relay/ }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: /Start and step away/ }),
+    );
+
+    expect(screen.getByText("MOVE TO")).toBeVisible();
+    const active = JSON.parse(
+      localStorage.getItem(SESSION_STORAGE_KEY) ?? "{}",
+    );
+    expect(active.status).toBe("active");
+    expect(active.route[0].action).toContain("Stay seated if you prefer");
+    expect(
+      active.route
+        .filter(
+          (phase: { phase: string }) =>
+            phase.phase === "move" || phase.phase === "arrive",
+        )
+        .every(
+          (phase: { station: { modes: string[] } }) =>
+            phase.station.modes.includes("seated"),
+        ),
+    ).toBe(true);
+  });
+
+  it("repairs legacy saved preferences with no stations safe for their movement mode", async () => {
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: [
+          STATION_PRESETS.find((station) => station.id === "doorway"),
+          STATION_PRESETS.find((station) => station.id === "hallway"),
+          STATION_PRESETS.find((station) => station.id === "outside"),
+        ],
+        feeling: "noise",
+        duration: 7,
+        spaceMode: "seated",
+        audioEnabled: false,
+        launchSetupComplete: true,
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+
+    expect(
+      screen.getByRole("heading", {
+        name: "Mark three places that can carry a break.",
+      }),
+    ).toBeVisible();
+    expect(screen.getByText("0 / 3 minimum")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /Shape my relay/ }),
+    ).toBeDisabled();
+    await waitFor(() =>
+      expect(
+        JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}").stations,
+      ).toEqual([]),
+    );
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+  });
+
   it("lets a returning user edit stations and reset all local data", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem(

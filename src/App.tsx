@@ -12,6 +12,7 @@ import {
   FEELINGS,
   SPACE_MODES,
   STATION_PRESETS,
+  stationsForSpaceMode,
 } from "./data";
 import { getRelayCapabilities, speakCue } from "./capabilities";
 import {
@@ -246,6 +247,7 @@ function StationSetup({
 }) {
   const [customName, setCustomName] = useState("");
   const [customError, setCustomError] = useState("");
+  const [modeNotice, setModeNotice] = useState("");
   const customInput = useRef<HTMLInputElement>(null);
 
   const visiblePresets = useMemo(
@@ -253,18 +255,42 @@ function StationSetup({
     [draft.spaceMode],
   );
 
-  const selectedIds = new Set(draft.stations.map((station) => station.id));
+  const safeStations = useMemo(
+    () => stationsForSpaceMode(draft.stations, draft.spaceMode),
+    [draft.spaceMode, draft.stations],
+  );
+  const selectedIds = new Set(safeStations.map((station) => station.id));
+
+  function changeSpaceMode(spaceMode: SpaceMode) {
+    const compatible = stationsForSpaceMode(draft.stations, spaceMode);
+    const removed = draft.stations.length - compatible.length;
+    setCustomError("");
+    setModeNotice(
+      removed > 0
+        ? `${removed} ${
+            removed === 1 ? "place was" : "places were"
+          } removed because ${
+            removed === 1 ? "it is" : "they are"
+          } not available in this movement mode. Choose safe replacements to continue.`
+        : "",
+    );
+    onDraftChange({
+      ...draft,
+      spaceMode,
+      stations: compatible,
+    });
+  }
 
   function toggleStation(station: Station) {
     if (selectedIds.has(station.id)) {
       onDraftChange({
         ...draft,
-        stations: draft.stations.filter((item) => item.id !== station.id),
+        stations: safeStations.filter((item) => item.id !== station.id),
       });
       return;
     }
-    if (draft.stations.length >= 6) return;
-    onDraftChange({ ...draft, stations: [...draft.stations, station] });
+    if (safeStations.length >= 6) return;
+    onDraftChange({ ...draft, stations: [...safeStations, station] });
   }
 
   function addCustom(event: React.FormEvent) {
@@ -275,7 +301,7 @@ function StationSetup({
       customInput.current?.focus();
       return;
     }
-    if (draft.stations.length >= 6) {
+    if (safeStations.length >= 6) {
       setCustomError("Six stops is plenty for a useful relay.");
       return;
     }
@@ -284,10 +310,15 @@ function StationSetup({
       name: cleanName,
       kind: "custom",
       detail: "Your own reachable stop",
-      modes: ["any", "small", "seated"],
+      modes:
+        draft.spaceMode === "seated"
+          ? ["any", "small", "seated"]
+          : draft.spaceMode === "small"
+            ? ["any", "small"]
+            : ["any"],
       custom: true,
     };
-    onDraftChange({ ...draft, stations: [...draft.stations, station] });
+    onDraftChange({ ...draft, stations: [...safeStations, station] });
     setCustomName("");
     setCustomError("");
   }
@@ -319,9 +350,14 @@ function StationSetup({
         <section className="setup-workspace">
           <div className="station-library">
             <SpaceModePicker
-              onChange={(spaceMode) => onDraftChange({ ...draft, spaceMode })}
+              onChange={changeSpaceMode}
               value={draft.spaceMode}
             />
+            {modeNotice && (
+              <p className="mode-reconcile-note" role="status">
+                {modeNotice}
+              </p>
+            )}
 
             <div className="field-heading">
               <div>
@@ -329,7 +365,7 @@ function StationSetup({
                 <p>Pick 3–6. You can change these any time.</p>
               </div>
               <span className="count-pill" aria-live="polite">
-                {draft.stations.length} / 3 minimum
+                {safeStations.length} / 3 minimum
               </span>
             </div>
 
@@ -340,14 +376,14 @@ function StationSetup({
                   <button
                     aria-pressed={selected}
                     className={`station-option ${selected ? "is-selected" : ""}`}
-                    disabled={!selected && draft.stations.length >= 6}
+                    disabled={!selected && safeStations.length >= 6}
                     key={station.id}
                     onClick={() => toggleStation(station)}
                     type="button"
                   >
                     <span className="station-number" aria-hidden="true">
                       {selected
-                        ? draft.stations.findIndex((item) => item.id === station.id) + 1
+                        ? safeStations.findIndex((item) => item.id === station.id) + 1
                         : "＋"}
                     </span>
                     <span>
@@ -395,16 +431,16 @@ function StationSetup({
           <aside className="route-slip" aria-label="Your selected route">
             <div className="route-slip__top">
               <span>YOUR RELAY</span>
-              <span>{draft.stations.length ? "READYING" : "EMPTY"}</span>
+              <span>{safeStations.length ? "READYING" : "EMPTY"}</span>
             </div>
             <ol className="route-list">
-              {draft.stations.length === 0 ? (
+              {safeStations.length === 0 ? (
                 <li className="route-empty">
                   <span />
                   Your chosen stops will line up here.
                 </li>
               ) : (
-                draft.stations.map((station, index) => (
+                safeStations.map((station, index) => (
                   <li key={station.id}>
                     <span className="route-node">{index + 1}</span>
                     <span>
@@ -432,17 +468,17 @@ function StationSetup({
             </div>
             <button
               className="primary-button primary-button--wide"
-              disabled={draft.stations.length < 3}
+              disabled={safeStations.length < 3}
               onClick={onContinue}
               type="button"
             >
               {editing ? "Save relay points" : "Shape my relay"}
               <Icon name="arrow" />
             </button>
-            {draft.stations.length < 3 && (
+            {safeStations.length < 3 && (
               <p className="button-hint">
-                Choose {3 - draft.stations.length} more{" "}
-                {3 - draft.stations.length === 1 ? "stop" : "stops"} to continue.
+                Choose {3 - safeStations.length} more{" "}
+                {3 - safeStations.length === 1 ? "stop" : "stops"} to continue.
               </p>
             )}
           </aside>
@@ -1916,9 +1952,24 @@ export default function App() {
     },
   ) {
     if (launchingRef.current || session?.status === "active") return;
+    const safeStations = stationsForSpaceMode(
+      source.stations,
+      source.spaceMode,
+    );
+    const preparedSource = {
+      ...source,
+      stations: safeStations,
+    };
+    if (safeStations.length < 3) {
+      if (source.hasOnboarded) updatePreferences(preparedSource);
+      setDraft(preparedSource);
+      setEditing(source.hasOnboarded);
+      setScreen("stations");
+      return;
+    }
     launchingRef.current = true;
     const nextPreferences = {
-      ...source,
+      ...preparedSource,
       audioEnabled: options.audioEnabled,
       keepAwake: options.keepAwake,
       alwaysReviewLaunch: options.alwaysReviewLaunch,

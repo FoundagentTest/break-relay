@@ -1,4 +1,7 @@
-import { DEFAULT_PREFERENCES } from "./data";
+import {
+  DEFAULT_PREFERENCES,
+  stationsForSpaceMode,
+} from "./data";
 import { getRelayCapabilities } from "./capabilities";
 import { reconcileSession } from "./session";
 import type {
@@ -19,6 +22,20 @@ export function loadPreferences(): Preferences {
     const saved = window.localStorage.getItem(STORAGE_KEY);
     if (!saved) return DEFAULT_PREFERENCES;
     const parsed = JSON.parse(saved) as Partial<Preferences>;
+    const spaceMode: SpaceMode = ["any", "small", "seated"].includes(
+      parsed.spaceMode ?? "",
+    )
+      ? (parsed.spaceMode as SpaceMode)
+      : DEFAULT_PREFERENCES.spaceMode;
+    const savedStations = Array.isArray(parsed.stations)
+      ? parsed.stations.filter(
+          (station) =>
+            !!station &&
+            typeof station.id === "string" &&
+            typeof station.name === "string" &&
+            Array.isArray(station.modes),
+        )
+      : [];
     const legacyLaunchPreferences =
       typeof parsed.launchSetupComplete !== "boolean";
     const currentCapabilities = getRelayCapabilities();
@@ -43,7 +60,8 @@ export function loadPreferences(): Preferences {
     return {
       ...DEFAULT_PREFERENCES,
       ...parsed,
-      stations: Array.isArray(parsed.stations) ? parsed.stations : [],
+      spaceMode,
+      stations: stationsForSpaceMode(savedStations, spaceMode).slice(0, 6),
       keepAwake:
         typeof parsed.keepAwake === "boolean" ? parsed.keepAwake : false,
       alwaysReviewLaunch:

@@ -426,6 +426,17 @@ a:focus-visible {
   grid-template-columns: repeat(3, 1fr);
 }
 
+.mode-reconcile-note {
+  padding: 11px 13px;
+  margin: 12px 0 0;
+  border-left: 3px solid var(--coral);
+  border-radius: 0 8px 8px 0;
+  background: rgba(216, 95, 73, 0.08);
+  color: var(--ink-soft);
+  font-size: 0.73rem;
+  line-height: 1.45;
+}
+
 .space-mode {
   position: relative;
   display: grid;

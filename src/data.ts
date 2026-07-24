@@ -437,6 +437,17 @@ export interface RouteBuildOptions {
   spaceMode?: SpaceMode;
 }
 
+export function stationsForSpaceMode(
+  stations: Station[],
+  spaceMode: SpaceMode,
+) {
+  return stations.filter(
+    (station) =>
+      Array.isArray(station.modes) &&
+      station.modes.includes(spaceMode),
+  );
+}
+
 const QUIET_KINDS = new Set<StationKind>(["view", "nature", "rest"]);
 
 function uniqueStationOrder(entry: RouteHistoryEntry) {
@@ -568,9 +579,7 @@ export function buildRoute(
   const history = [...(options.history ?? [])].sort(
     (a, b) => b.completedAt - a.completedAt,
   );
-  const eligible = stations.filter((station) =>
-    station.modes.includes(spaceMode),
-  );
+  const eligible = stationsForSpaceMode(stations, spaceMode);
   if (eligible.length === 0) {
     throw new Error("A relay needs at least one station available in this space.");
   }

@@ -26,3 +26,13 @@ relays through local history.
 Active-session schema version 4 adds the phase name. Versions 1–3 migrate in
 place: legacy station steps become `arrive`, legacy return and extension steps
 keep their role, and their original deadlines are not rewritten.
+
+Station safety is reconciled before route composition. Changing the space mode
+removes selected presets that do not declare support for the new mode, reports
+what changed, and requires three safe replacements before setup can continue.
+Loaded preferences receive the same filter before the app decides that a
+returning route is launch-ready, so an older incompatible selection returns to
+setup instead of failing during the one-action launch. New custom places are
+scoped to the movement mode in which the user adds them; a custom place added
+in low-movement mode may be reused in broader modes, but the reverse is not
+assumed.
