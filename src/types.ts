@@ -48,6 +48,7 @@ export interface LaunchCapabilitySnapshot {
   checkedAt?: number;
   signature?: string;
   chimeVerified?: boolean;
+  audibilityConfirmed?: boolean;
   visualOnlyAcknowledged?: boolean;
   speechVerified?: boolean;
   wakeVerified?: boolean;

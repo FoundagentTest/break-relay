@@ -3187,6 +3187,56 @@ a:focus-visible {
   background: rgba(200, 222, 208, 0.45);
 }
 
+.audibility-confirmation {
+  max-width: 610px;
+  padding: 14px;
+  margin-top: 12px;
+  border: 1px solid rgba(227, 107, 75, 0.3);
+  border-radius: var(--radius-sm);
+  background: rgba(227, 107, 75, 0.08);
+}
+
+.audibility-confirmation > p {
+  margin: 0 0 10px !important;
+  color: var(--ink) !important;
+  font-size: 0.7rem !important;
+  line-height: 1.5;
+}
+
+.audibility-confirmation > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.audibility-confirmation .secondary-button {
+  min-height: 44px;
+  padding-inline: 16px;
+  font-size: 0.7rem;
+}
+
+.receiver-chime-check {
+  min-height: 44px;
+  padding: 8px 14px;
+  margin-top: 12px;
+  color: var(--ink);
+  font-size: 0.68rem;
+}
+
+.receive-capabilities .audibility-confirmation {
+  border-color: rgba(255, 196, 178, 0.42);
+  background: rgba(227, 107, 75, 0.14);
+}
+
+.receive-capabilities .audibility-confirmation > p {
+  color: rgba(255, 255, 255, 0.82) !important;
+}
+
+.receive-capabilities .audibility-confirmation .text-button {
+  color: rgba(255, 255, 255, 0.78);
+}
+
 .visual-only-button {
   min-height: 44px;
   margin-left: 16px;

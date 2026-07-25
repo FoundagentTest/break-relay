@@ -188,6 +188,12 @@ export function loadPreferences(): Preferences {
             ...(typeof savedSnapshotRecord.chimeVerified === "boolean"
               ? { chimeVerified: savedSnapshotRecord.chimeVerified }
               : {}),
+            ...(typeof savedSnapshotRecord.audibilityConfirmed === "boolean"
+              ? {
+                  audibilityConfirmed:
+                    savedSnapshotRecord.audibilityConfirmed,
+                }
+              : {}),
             ...(typeof savedSnapshotRecord.visualOnlyAcknowledged ===
             "boolean"
               ? {

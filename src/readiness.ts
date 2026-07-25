@@ -12,6 +12,19 @@ export function capabilitySignature() {
   ].join(":");
 }
 
+export function recentCapabilitySnapshot(
+  snapshot: LaunchCapabilitySnapshot | null,
+  now = Date.now(),
+) {
+  return Boolean(
+    snapshot &&
+      typeof snapshot.checkedAt === "number" &&
+      now - snapshot.checkedAt <= CAPABILITY_CHECK_MAX_AGE_MS &&
+      now >= snapshot.checkedAt &&
+      snapshot.signature === capabilitySignature(),
+  );
+}
+
 export function freshCapabilityCheck(
   snapshot: LaunchCapabilitySnapshot | null,
   {
@@ -24,16 +37,13 @@ export function freshCapabilityCheck(
     now?: number;
   },
 ) {
+  if (!recentCapabilitySnapshot(snapshot, now) || !snapshot) return false;
   if (
-    !snapshot ||
-    typeof snapshot.checkedAt !== "number" ||
-    now - snapshot.checkedAt > CAPABILITY_CHECK_MAX_AGE_MS ||
-    now < snapshot.checkedAt ||
-    snapshot.signature !== capabilitySignature()
+    cueSoundEnabled &&
+    (!snapshot.chimeVerified || !snapshot.audibilityConfirmed)
   ) {
     return false;
   }
-  if (cueSoundEnabled && !snapshot.chimeVerified) return false;
   if (!cueSoundEnabled && !snapshot.visualOnlyAcknowledged) return false;
   if (keepAwake && !snapshot.wakeVerified) return false;
   return true;

@@ -4,6 +4,7 @@ import {
   capabilitySignature,
   formatLocalReturnTime,
   freshCapabilityCheck,
+  recentCapabilitySnapshot,
   returnTimeBackupText,
 } from "./readiness";
 import type { LaunchCapabilitySnapshot } from "./types";
@@ -15,6 +16,7 @@ function verifiedAt(checkedAt: number): LaunchCapabilitySnapshot {
     checkedAt,
     signature: capabilitySignature(),
     chimeVerified: true,
+    audibilityConfirmed: true,
     visualOnlyAcknowledged: false,
     speechVerified: false,
     wakeVerified: false,
@@ -52,6 +54,33 @@ describe("remembered device readiness", () => {
       freshCapabilityCheck(
         { ...verifiedAt(now), signature: "changed-device" },
         { cueSoundEnabled: true, keepAwake: false, now },
+      ),
+    ).toBe(false);
+  });
+
+  it("does not treat old transport-only playback evidence as audible", () => {
+    const now = 2_000_000_000_000;
+    const oldSnapshot = {
+      ...verifiedAt(now),
+      audibilityConfirmed: undefined,
+    };
+
+    expect(
+      freshCapabilityCheck(oldSnapshot, {
+        cueSoundEnabled: true,
+        keepAwake: false,
+        now,
+      }),
+    ).toBe(false);
+  });
+
+  it("shares one freshness boundary across chime, speech, and wake labels", () => {
+    const now = 2_000_000_000_000;
+    expect(recentCapabilitySnapshot(verifiedAt(now), now)).toBe(true);
+    expect(
+      recentCapabilitySnapshot(
+        verifiedAt(now - CAPABILITY_CHECK_MAX_AGE_MS - 1),
+        now,
       ),
     ).toBe(false);
   });

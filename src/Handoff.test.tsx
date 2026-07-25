@@ -87,6 +87,26 @@ function openHandoff(handoff: BreakHandoff) {
   window.history.replaceState({}, "", `/${url.hash}`);
 }
 
+async function confirmReceiverChime(
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  const start = screen.getByRole("button", {
+    name: /start on this device/i,
+  });
+  if (!start.hasAttribute("disabled")) return;
+  await user.click(
+    screen.getByRole("button", { name: "Play receiver chime" }),
+  );
+  expect(
+    await screen.findByText(/Playback started. Did you hear it/i),
+  ).toBeVisible();
+  expect(start).toBeDisabled();
+  await user.click(
+    screen.getByRole("button", { name: "Yes, I heard it" }),
+  );
+  expect(start).toBeEnabled();
+}
+
 describe("account-free device handoff", () => {
   beforeEach(() => {
     localStorage.clear();
@@ -255,6 +275,7 @@ describe("account-free device handoff", () => {
       }),
     ).not.toBeInTheDocument();
 
+    await confirmReceiverChime(user);
     await user.click(
       screen.getByRole("button", { name: /start on this device/i }),
     );
@@ -389,6 +410,7 @@ describe("account-free device handoff", () => {
     saveSession(existing);
     vi.clearAllMocks();
 
+    await confirmReceiverChime(user);
     await user.click(
       screen.getByRole("button", { name: /start on this device/i }),
     );
@@ -408,6 +430,7 @@ describe("account-free device handoff", () => {
     const user = userEvent.setup();
     openHandoff(preparedHandoff());
     const firstView = render(<App />);
+    await confirmReceiverChime(user);
     await user.click(
       screen.getByRole("button", { name: /start on this device/i }),
     );
@@ -463,6 +486,7 @@ describe("account-free device handoff", () => {
     const user = userEvent.setup();
     openHandoff(preparedHandoff());
     const firstView = render(<App />);
+    await confirmReceiverChime(user);
     await user.click(
       screen.getByRole("button", { name: /start on this device/i }),
     );

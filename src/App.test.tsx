@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import {
+  CAPABILITY_CHECK_MAX_AGE_MS,
   capabilitySignature,
   formatLocalReturnTime,
 } from "./readiness";
@@ -27,6 +28,7 @@ function verifiedSnapshot(wakeLock = false) {
     checkedAt: Date.now(),
     signature: capabilitySignature(),
     chimeVerified: true,
+    audibilityConfirmed: true,
     visualOnlyAcknowledged: false,
     speechVerified: true,
     wakeVerified: wakeLock,
@@ -40,6 +42,24 @@ function storedActiveSpace() {
   return stored.spaces?.find(
     (space: { id: string }) => space.id === stored.activeSpaceId,
   );
+}
+
+async function confirmReadinessChime(
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  const launch = screen.getByRole("button", { name: /step away/i });
+  if (!launch.hasAttribute("disabled")) return;
+  await user.click(
+    screen.getByRole("button", { name: /Play chime check/i }),
+  );
+  expect(
+    await screen.findByText(/Playback started · audibility unknown/i),
+  ).toBeVisible();
+  expect(launch).toBeDisabled();
+  await user.click(
+    screen.getByRole("button", { name: "Yes, I heard it" }),
+  );
+  expect(launch).toBeEnabled();
 }
 
 describe("Break Relay", () => {
@@ -107,6 +127,7 @@ describe("Break Relay", () => {
     expect(
       screen.getByRole("button", { name: "Test voice (optional)" }),
     ).toBeInTheDocument();
+    await confirmReadinessChime(user);
     await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(screen.getByRole("button", { name: "Pause" })).toBeInTheDocument();
@@ -206,6 +227,7 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("button", { name: /Start this relay/ }),
     );
+    await confirmReadinessChime(user);
     await user.click(
       screen.getByRole("button", { name: /step away/i }),
     );
@@ -671,6 +693,7 @@ describe("Break Relay", () => {
     expect(
       screen.getByText(/set a 5-minute device timer/i),
     ).toBeVisible();
+    await confirmReadinessChime(user);
     expect(
       screen.getByRole("button", { name: /step away/i }),
     ).toBeEnabled();
@@ -709,6 +732,7 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("checkbox", { name: "Keep this session awake" }),
     );
+    await confirmReadinessChime(user);
     await user.click(
       screen.getByRole("button", { name: /step away/i }),
     );
@@ -752,9 +776,9 @@ describe("Break Relay", () => {
 
     render(<App />);
     expect(
-      screen.getByText("Verified offline chime + visible cues"),
+      screen.getByText("Chime heard recently + visible cues"),
     ).toBeVisible();
-    expect(screen.getByText("Voice enhancement verified")).toBeVisible();
+    expect(screen.getByText("Voice started in a recent check")).toBeVisible();
     expect(screen.getByText("Keep dim display awake")).toBeVisible();
     await user.click(
       screen.getByRole("button", { name: /Begin .*break/ }),
@@ -889,7 +913,7 @@ describe("Break Relay", () => {
 
     render(<App />);
     expect(
-      screen.getByText("Verified offline chime + visible cues"),
+      screen.getByText("Chime heard recently + visible cues"),
     ).toBeVisible();
     await user.click(
       screen.getByRole("button", { name: "Review or change" }),
@@ -907,6 +931,7 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: "Test voice (optional)" }),
     );
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
+    await confirmReadinessChime(user);
     await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(2);
@@ -957,6 +982,7 @@ describe("Break Relay", () => {
     await user.click(
       screen.getByRole("checkbox", { name: "Keep this session awake" }),
     );
+    await confirmReadinessChime(user);
     await user.click(
       screen.getByRole("button", { name: /step away/i }),
     );
@@ -970,7 +996,7 @@ describe("Break Relay", () => {
     });
   });
 
-  it("allows intentional first-use launch without a disposable sample", async () => {
+  it("requires a heard-by-user chime check before first-use sound launch", async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole("button", { name: /Window or view/ }));
@@ -980,7 +1006,10 @@ describe("Break Relay", () => {
     await user.click(screen.getByRole("button", { name: /Start this relay/ }));
 
     expect(window.speechSynthesis.speak).not.toHaveBeenCalled();
-    expect(screen.getByText(/No sample is required/i)).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /step away/i }),
+    ).toBeDisabled();
+    await confirmReadinessChime(user);
     await user.click(screen.getByRole("button", { name: /step away/i }));
 
     expect(window.speechSynthesis.speak).toHaveBeenCalledTimes(1);
@@ -990,6 +1019,131 @@ describe("Break Relay", () => {
     expect(utterance.text).toContain(
       screen.getByRole("heading", { level: 1 }).textContent,
     );
+  });
+
+  it("never treats playback start alone as audible when the user did not hear it", async () => {
+    const user = userEvent.setup();
+    const transportOnlySnapshot = {
+      ...verifiedSnapshot(),
+      audibilityConfirmed: undefined,
+    };
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        stations: STATION_PRESETS.slice(0, 3),
+        feeling: "noise",
+        duration: 5,
+        spaceMode: "any",
+        audioEnabled: true,
+        cueSoundEnabled: true,
+        keepAwake: false,
+        alwaysReviewLaunch: false,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: transportOnlySnapshot,
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+    expect(
+      screen.getByText("Chime needs a heard-by-you check"),
+    ).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "Begin my break" }));
+
+    const launch = screen.getByRole("button", { name: /step away/i });
+    expect(launch).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "Play chime check" }),
+    );
+
+    expect(
+      await screen.findByText("PLAYBACK STARTED · AUDIBILITY UNKNOWN"),
+    ).toBeVisible();
+    expect(launch).toBeDisabled();
+    expect(screen.queryByText(/chime heard/i)).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "I didn’t hear it" }),
+    );
+    expect(screen.getByText("CHIME NOT AVAILABLE")).toBeVisible();
+    expect(screen.getByText("Sound is not dependable here.")).toBeVisible();
+    expect(screen.getByText("Local return time")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Copy exact return time" }),
+    ).toBeEnabled();
+    expect(launch).toBeDisabled();
+    expect(
+      JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}")
+        .capabilitySnapshot.audibilityConfirmed,
+    ).not.toBe(true);
+  });
+
+  it("shows one expired cue, voice, and wake state across Home, Settings, and readiness", async () => {
+    const user = userEvent.setup();
+    const request = vi.fn().mockResolvedValue({
+      release: vi.fn().mockResolvedValue(undefined),
+      addEventListener: vi.fn(),
+    });
+    Object.defineProperty(navigator, "wakeLock", {
+      configurable: true,
+      value: { request },
+    });
+    localStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({
+        ...DEFAULT_PREFERENCES,
+        stations: STATION_PRESETS.slice(0, 3),
+        audioEnabled: true,
+        keepAwake: true,
+        launchSetupComplete: true,
+        launchNeedsReview: false,
+        capabilitySnapshot: {
+          ...verifiedSnapshot(true),
+          checkedAt: Date.now() - CAPABILITY_CHECK_MAX_AGE_MS - 1,
+        },
+        hasOnboarded: true,
+      }),
+    );
+
+    render(<App />);
+
+    expect(screen.getByText("Chime hearing check expired")).toBeVisible();
+    expect(screen.getByText("Voice check expired")).toBeVisible();
+    expect(screen.getByText("Screen wake check expired")).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "My relay" }));
+    const settings = screen.getByRole("dialog", {
+      name: "My relay settings",
+    });
+    expect(
+      within(settings).getByText(
+        "Chosen, but a new heard-by-you chime check is required.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(settings).getByText(
+        "The saved voice check expired; API presence is not playback proof.",
+      ),
+    ).toBeVisible();
+    expect(
+      within(settings).getByText(
+        "The saved screen-wake check expired; a chosen launch must obtain it again.",
+      ),
+    ).toBeVisible();
+
+    await user.click(
+      within(settings).getByRole("button", { name: "Review setup" }),
+    );
+    expect(screen.getByText("CHIME READY TO CHECK")).toBeVisible();
+    expect(screen.getByText("VOICE CHECK EXPIRED")).toBeVisible();
+    expect(screen.getByText("SCREEN WAKE CHECK EXPIRED")).toBeVisible();
+    expect(
+      screen.queryByText(/VOICE PLAYBACK VERIFIED/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /step away/i }),
+    ).toBeDisabled();
   });
 
   it("routes capability changes to review before creating a session", async () => {
@@ -1022,8 +1176,9 @@ describe("Break Relay", () => {
     render(<App />);
     await user.click(screen.getByRole("button", { name: "Begin my break" }));
 
-    expect(screen.getByText("VISUAL CUES ONLY")).toBeVisible();
+    expect(screen.getByText("VOICE CHECK EXPIRED")).toBeVisible();
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
+    await confirmReadinessChime(user);
     await user.click(screen.getByRole("button", { name: /step away/i }));
     expect(screen.getByRole("button", { name: "Pause" })).toBeVisible();
     expect(
@@ -1202,7 +1357,9 @@ describe("Break Relay", () => {
       screen.getByRole("button", { name: /Begin .*break/ }),
     );
 
-    expect(await screen.findByText("The chime did not start.")).toBeVisible();
+    expect(
+      await screen.findByText("Sound is not dependable here."),
+    ).toBeVisible();
     expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBeNull();
     expect(screen.getByText("Local return time")).toBeVisible();
     expect(
@@ -1284,6 +1441,7 @@ describe("Break Relay", () => {
         name: "Set a boundary this browser can keep.",
       }),
     ).toBeVisible();
+    await confirmReadinessChime(user);
     await user.click(
       screen.getByRole("button", { name: /step away/i }),
     );

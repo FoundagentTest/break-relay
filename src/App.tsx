@@ -92,6 +92,7 @@ import {
   capabilitySignature,
   formatLocalReturnTime,
   freshCapabilityCheck,
+  recentCapabilitySnapshot,
   returnTimeBackupText,
 } from "./readiness";
 import {
@@ -658,12 +659,14 @@ function speak(text: string, callbacks: SpeechCueCallbacks | (() => void) = {}) 
 
 function launchCapabilitySnapshot({
   chimeVerified,
+  audibilityConfirmed,
   visualOnlyAcknowledged,
   speechVerified,
   wakeVerified,
   checkedAt = Date.now(),
 }: {
   chimeVerified: boolean;
+  audibilityConfirmed: boolean;
   visualOnlyAcknowledged: boolean;
   speechVerified: boolean;
   wakeVerified: boolean;
@@ -676,6 +679,7 @@ function launchCapabilitySnapshot({
     checkedAt,
     signature: capabilitySignature(),
     chimeVerified,
+    audibilityConfirmed,
     visualOnlyAcknowledged,
     speechVerified,
     wakeVerified,
@@ -903,24 +907,30 @@ function Readiness({
   onBack: () => void;
   onStart: (options: {
     cueSoundEnabled: boolean;
+    chimeConfirmedAt: number | null;
     audioEnabled: boolean;
     keepAwake: boolean;
     alwaysReviewLaunch: boolean;
   }) => Promise<LaunchAttempt>;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
+  const snapshotIsRecent = recentCapabilitySnapshot(
+    preferences.capabilitySnapshot,
+  );
+  const rememberedChimeWasHeard =
+    snapshotIsRecent &&
+    preferences.capabilitySnapshot?.chimeVerified === true &&
+    preferences.capabilitySnapshot?.audibilityConfirmed === true;
   const [cueSoundEnabled, setCueSoundEnabled] = useState(
     preferences.cueSoundEnabled && capabilities.audio,
   );
   const [chimeStatus, setChimeStatus] = useState<
-    "idle" | "checking" | "verified" | "failed"
-  >(
-    freshCapabilityCheck(preferences.capabilitySnapshot, {
-      cueSoundEnabled: true,
-      keepAwake: false,
-    })
-      ? "verified"
-      : "idle",
+    "idle" | "checking" | "awaiting-confirmation" | "verified" | "failed"
+  >(rememberedChimeWasHeard ? "verified" : "idle");
+  const [chimeConfirmedAt, setChimeConfirmedAt] = useState<number | null>(
+    rememberedChimeWasHeard
+      ? (preferences.capabilitySnapshot?.checkedAt ?? null)
+      : null,
   );
   const [spokenCues, setSpokenCues] = useState(
     preferences.audioEnabled && capabilities.speech,
@@ -929,6 +939,7 @@ function Readiness({
     "untested" | "checking" | "verified" | "failed"
   >(
     capabilities.speech &&
+      snapshotIsRecent &&
       preferences.capabilitySnapshot?.speechVerified
       ? "verified"
       : "untested",
@@ -949,8 +960,10 @@ function Readiness({
 
   async function checkChime() {
     setChimeStatus("checking");
+    setChimeConfirmedAt(null);
+    setLaunchFailure(null);
     const result = await playCueSignal("phase");
-    setChimeStatus(result.ok ? "verified" : "failed");
+    setChimeStatus(result.ok ? "awaiting-confirmation" : "failed");
     if (!result.ok) setLaunchFailure("chime");
   }
 
@@ -974,6 +987,7 @@ function Readiness({
     setLaunching(true);
     const result = await onStart({
       cueSoundEnabled,
+      chimeConfirmedAt,
       audioEnabled,
       keepAwake,
       alwaysReviewLaunch,
@@ -1003,7 +1017,8 @@ function Readiness({
           <p className="lede">
             Your exact route and deadline stay on this device. If the tab sleeps
             or reloads, Relay catches up to the one cue that matters now. The
-            launch action checks real chime playback and any chosen screen wake
+            launch action checks that chime playback starts after your
+            heard-by-you confirmation, and obtains any chosen screen wake,
             before the session exists.
           </p>
         </div>
@@ -1017,7 +1032,9 @@ function Readiness({
               <div>
                 <p className="capability-label">
                   {chimeStatus === "verified"
-                    ? "OFFLINE CHIME VERIFIED"
+                    ? "CHIME HEARD IN A RECENT CHECK"
+                    : chimeStatus === "awaiting-confirmation"
+                      ? "PLAYBACK STARTED · AUDIBILITY UNKNOWN"
                     : chimeStatus === "failed" || !capabilities.audio
                       ? "CHIME NOT AVAILABLE"
                       : "CHIME READY TO CHECK"}
@@ -1025,8 +1042,9 @@ function Readiness({
                 <h2>A calm sound cue, with a distinct return.</h2>
                 <p>
                   The short bundled chime works offline. Ordinary phases use one
-                  soft note; the final return uses two. Relay confirms playback
-                  from your launch gesture, not from API presence.
+                  soft note; the final return uses two. Relay can detect that
+                  playback started, but browsers do not reveal tab, site,
+                  device, or output mute. Confirm this check by ear.
                 </p>
                 {cueSoundEnabled && capabilities.audio && (
                   <button
@@ -1044,9 +1062,41 @@ function Readiness({
                     {chimeStatus === "checking"
                       ? "Checking chime…"
                       : chimeStatus === "verified"
-                        ? "Chime playback verified"
+                        ? "Play chime again"
                         : "Play chime check"}
                   </button>
+                )}
+                {chimeStatus === "awaiting-confirmation" && (
+                  <div className="audibility-confirmation" role="status">
+                    <p>
+                      Playback started. Did you actually hear the soft chime?
+                      Relay cannot detect a muted tab or device.
+                    </p>
+                    <div>
+                      <button
+                        className="secondary-button"
+                        onClick={() => {
+                          setChimeConfirmedAt(Date.now());
+                          setChimeStatus("verified");
+                          setLaunchFailure(null);
+                        }}
+                        type="button"
+                      >
+                        Yes, I heard it
+                      </button>
+                      <button
+                        className="text-button"
+                        onClick={() => {
+                          setChimeConfirmedAt(null);
+                          setChimeStatus("failed");
+                          setLaunchFailure("chime");
+                        }}
+                        type="button"
+                      >
+                        I didn’t hear it
+                      </button>
+                    </div>
+                  </div>
                 )}
                 <label className="wake-choice">
                   <input
@@ -1063,9 +1113,9 @@ function Readiness({
                 </label>
                 {(chimeStatus === "failed" || !capabilities.audio) && (
                   <p className="capability-warning" role="status">
-                    The chime could not start here. Do not rely on sound away
-                    from this screen. Use the exact return time and device-timer
-                    backup shown beside Start.
+                    An audible chime was not established here. Do not rely on
+                    sound away from this screen. Use the exact return time and
+                    device-timer backup shown beside Start.
                   </p>
                 )}
                 {!cueSoundEnabled && (
@@ -1084,7 +1134,10 @@ function Readiness({
               <div>
                 <p className="capability-label">
                   {speechStatus === "verified"
-                    ? "VOICE PLAYBACK VERIFIED"
+                    ? "VOICE STARTED IN A RECENT CHECK"
+                    : !snapshotIsRecent &&
+                        preferences.capabilitySnapshot?.speechVerified
+                      ? "VOICE CHECK EXPIRED"
                     : capabilities.speech
                       ? "VOICE API DETECTED"
                       : "VISUAL CUES ONLY"}
@@ -1154,8 +1207,15 @@ function Readiness({
               </span>
               <div>
                 <p className="capability-label">
-                  {capabilities.wakeLock
-                    ? "SCREEN WAKE CAN BE REQUESTED"
+                  {capabilities.wakeLock &&
+                  !snapshotIsRecent &&
+                  preferences.capabilitySnapshot?.wakeVerified
+                    ? "SCREEN WAKE CHECK EXPIRED"
+                    : capabilities.wakeLock
+                      ? snapshotIsRecent &&
+                        preferences.capabilitySnapshot?.wakeVerified
+                        ? "SCREEN WAKE RECENTLY HELD"
+                        : "SCREEN WAKE CAN BE REQUESTED"
                     : "SYSTEM FALLBACK"}
                 </p>
                 <h2>
@@ -1216,12 +1276,12 @@ function Readiness({
               <div className="launch-failure" role="alert">
                 <strong>
                   {launchFailure === "chime"
-                    ? "The chime did not start."
+                    ? "Sound is not dependable here."
                     : "Screen wake was not granted."}
                 </strong>
                 <p>
                   {launchFailure === "chime"
-                    ? "Do not leave expecting a sound cue. Turn sound off for a visual-only relay, retry, or use your device timer."
+                    ? "Relay either could not start the chime or you did not hear it. Turn sound off for a visual-only relay, retry, or use your device timer."
                     : "The display may sleep. Turn screen wake off to continue with the chime, visible cue, and timer backup."}
                 </p>
               </div>
@@ -1233,7 +1293,10 @@ function Readiness({
             />
             <button
               className="primary-button primary-button--coral primary-button--wide"
-              disabled={launching}
+              disabled={
+                launching ||
+                (cueSoundEnabled && chimeStatus !== "verified")
+              }
               onClick={launch}
               type="button"
             >
@@ -1245,9 +1308,9 @@ function Readiness({
               <Icon name="arrow" />
             </button>
             <small>
-              No sample is required—the first route chime is the sound check.
-              The clock starts only after selected cue and wake checks
-              succeed.
+              Sound launches require a heard-by-you check. Recent confirmed
+              devices keep Home’s one-action launch; every launch still checks
+              that playback starts and any selected wake request succeeds.
             </small>
           </aside>
         </div>
@@ -1365,23 +1428,22 @@ function Home({
   const [homeNow, setHomeNow] = useState(Date.now());
   const feeling = FEELINGS.find((item) => item.id === preferences.feeling);
   const capabilities = getRelayCapabilities();
-  const checkIsFresh = freshCapabilityCheck(
+  const snapshotIsRecent = recentCapabilitySnapshot(
     preferences.capabilitySnapshot,
-    {
-      cueSoundEnabled: preferences.cueSoundEnabled,
-      keepAwake: preferences.keepAwake,
-    },
+    homeNow,
   );
   const chimeReady =
     preferences.cueSoundEnabled &&
-    checkIsFresh &&
-    preferences.capabilitySnapshot?.chimeVerified;
+    snapshotIsRecent &&
+    preferences.capabilitySnapshot?.chimeVerified &&
+    preferences.capabilitySnapshot?.audibilityConfirmed;
   const spokenMode =
     preferences.audioEnabled &&
+    snapshotIsRecent &&
     preferences.capabilitySnapshot?.speechVerified;
   const awakeMode =
     preferences.keepAwake &&
-    checkIsFresh &&
+    snapshotIsRecent &&
     preferences.capabilitySnapshot?.wakeVerified;
   const activeSpace = activeRelaySpace(preferences);
   const compatibleStations = stationsForSpaceMode(
@@ -1588,17 +1650,23 @@ function Home({
                   <Icon name={chimeReady ? "sound" : "spark"} size={17} />
                   {preferences.cueSoundEnabled
                     ? chimeReady
-                      ? "Verified offline chime + visible cues"
-                      : "Chime needs a launch check"
+                      ? "Chime heard recently + visible cues"
+                      : !snapshotIsRecent &&
+                          preferences.capabilitySnapshot?.chimeVerified
+                        ? "Chime hearing check expired"
+                        : "Chime needs a heard-by-you check"
                     : "Visual-only · device timer advised"}
                 </span>
                 {preferences.audioEnabled && (
                   <span>
                     <Icon name="sound" size={17} />
                     {spokenMode
-                      ? "Voice enhancement verified"
-                      : capabilities.speech
-                        ? "Voice enhancement unverified"
+                      ? "Voice started in a recent check"
+                      : capabilities.speech &&
+                          preferences.capabilitySnapshot?.speechVerified
+                        ? "Voice check expired"
+                        : capabilities.speech
+                          ? "Voice enhancement unverified"
                         : "Voice enhancement unavailable"}
                   </span>
                 )}
@@ -1608,8 +1676,11 @@ function Home({
                     ? "Screen wake needs review"
                     : awakeMode
                     ? "Keep dim display awake"
-                    : preferences.keepAwake
-                      ? "Screen wake unavailable"
+                    : preferences.keepAwake &&
+                        preferences.capabilitySnapshot?.wakeVerified
+                      ? "Screen wake check expired"
+                      : preferences.keepAwake
+                        ? "Screen wake needs a launch check"
                       : "Display may sleep normally"}
                 </span>
               </div>
@@ -1617,6 +1688,13 @@ function Home({
                 Review or change
               </button>
             </div>
+            <p className="launch-boundary">
+              {chimeReady
+                ? "A recent heard check enables fast launch. Relay cannot detect if this tab or device was muted afterward."
+                : preferences.cueSoundEnabled
+                  ? "Sound needs Review and a heard-by-you check before departure."
+                  : "Visual-only launch does not establish an alarm, notification, or locked-screen cue."}
+            </p>
             <ReturnTimeBackup
               compact
               deadlineAt={projectedDeadline}
@@ -1901,9 +1979,19 @@ function HandoffReceive({
   }) => Promise<LaunchAttempt>;
 }) {
   const capabilities = useMemo(getRelayCapabilities, []);
+  const receiverSnapshotIsRecent = recentCapabilitySnapshot(
+    receiverPreferences.capabilitySnapshot,
+  );
+  const receiverRememberedChime =
+    receiverSnapshotIsRecent &&
+    receiverPreferences.capabilitySnapshot?.chimeVerified === true &&
+    receiverPreferences.capabilitySnapshot?.audibilityConfirmed === true;
   const [cueSoundEnabled, setCueSoundEnabled] = useState(
     receiverPreferences.cueSoundEnabled && capabilities.audio,
   );
+  const [chimeStatus, setChimeStatus] = useState<
+    "idle" | "checking" | "awaiting-confirmation" | "verified" | "failed"
+  >(receiverRememberedChime ? "verified" : "idle");
   const [spokenCues, setSpokenCues] = useState(
     receiverPreferences.audioEnabled && capabilities.speech,
   );
@@ -1919,6 +2007,14 @@ function HandoffReceive({
   const movement = SPACE_MODES.find(
     (item) => item.id === handoff.space.spaceMode,
   );
+
+  async function checkReceiverChime() {
+    setChimeStatus("checking");
+    setLaunchFailure(null);
+    const result = await playCueSignal("phase");
+    setChimeStatus(result.ok ? "awaiting-confirmation" : "failed");
+    if (!result.ok) setLaunchFailure("chime");
+  }
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -2001,18 +2097,67 @@ function HandoffReceive({
                 </strong>
                 <p>
                   {capabilities.audio
-                    ? "The receiving device will confirm actual bundled-chime playback from Start. The return uses a distinct two-note signal."
+                    ? "Start can detect that the bundled chime begins, but not whether this tab or device is muted. Confirm by ear here; the return uses two notes."
                     : "Audio playback is unavailable here. Keep the large cue visible and use the exact-time timer backup below."}
                 </p>
+                {cueSoundEnabled && capabilities.audio && (
+                  <>
+                    <button
+                      className={`secondary-button receiver-chime-check ${
+                        chimeStatus === "verified" ? "is-checked" : ""
+                      }`}
+                      disabled={chimeStatus === "checking"}
+                      onClick={checkReceiverChime}
+                      type="button"
+                    >
+                      {chimeStatus === "checking"
+                        ? "Checking chime…"
+                        : chimeStatus === "verified"
+                          ? "Play chime again"
+                          : "Play receiver chime"}
+                    </button>
+                    {chimeStatus === "awaiting-confirmation" && (
+                      <div className="audibility-confirmation" role="status">
+                        <p>
+                          Playback started. Did you hear it? Relay cannot
+                          detect tab or device mute.
+                        </p>
+                        <div>
+                          <button
+                            className="secondary-button"
+                            onClick={() => {
+                              setChimeStatus("verified");
+                              setLaunchFailure(null);
+                            }}
+                            type="button"
+                          >
+                            Yes, I heard it
+                          </button>
+                          <button
+                            className="text-button"
+                            onClick={() => {
+                              setChimeStatus("failed");
+                              setLaunchFailure("chime");
+                            }}
+                            type="button"
+                          >
+                            I didn’t hear it
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
               <label className="switch">
                 <span className="sr-only">Sound cues on this device</span>
                 <input
                   checked={cueSoundEnabled}
                   disabled={!capabilities.audio}
-                  onChange={(event) =>
-                    setCueSoundEnabled(event.target.checked)
-                  }
+                  onChange={(event) => {
+                    setCueSoundEnabled(event.target.checked);
+                    setLaunchFailure(null);
+                  }}
                   type="checkbox"
                 />
                 <span aria-hidden="true" />
@@ -2082,7 +2227,7 @@ function HandoffReceive({
             {launchFailure && (
               <div className="receive-expired" role="alert">
                 {launchFailure === "chime"
-                  ? "The receiver’s chime did not start. Turn sound off to continue visual-only, or retry; do not rely on an audio cue."
+                  ? "The receiver could not establish an audible chime. Turn sound off to continue visual-only, or retry; do not rely on an audio cue."
                   : "The receiver did not grant screen wake. Turn screen wake off to continue, or keep this screen in view."}
               </div>
             )}
@@ -2099,7 +2244,10 @@ function HandoffReceive({
             ) : (
               <button
                 className="primary-button primary-button--coral primary-button--wide"
-                disabled={launching}
+                disabled={
+                  launching ||
+                  (cueSoundEnabled && chimeStatus !== "verified")
+                }
                 onClick={async () => {
                   setLaunching(true);
                   setLaunchFailure(null);
@@ -2234,6 +2382,13 @@ function SettingsPanel({
   );
   const closeRef = useRef<HTMLButtonElement>(null);
   const activeSpace = activeRelaySpace(preferences);
+  const snapshotIsRecent = recentCapabilitySnapshot(
+    preferences.capabilitySnapshot,
+  );
+  const chimeWasHeardRecently =
+    snapshotIsRecent &&
+    preferences.capabilitySnapshot?.chimeVerified === true &&
+    preferences.capabilitySnapshot?.audibilityConfirmed === true;
 
   function submitNewSpace(event: React.FormEvent) {
     event.preventDefault();
@@ -2533,12 +2688,9 @@ function SettingsPanel({
             <h3>Offline sound cues</h3>
             <p>
               {preferences.cueSoundEnabled
-                ? freshCapabilityCheck(preferences.capabilitySnapshot, {
-                    cueSoundEnabled: true,
-                    keepAwake: false,
-                  })
-                  ? "Bundled chime verified recently; return uses two notes."
-                  : "Chosen, but playback needs a launch check."
+                ? chimeWasHeardRecently
+                  ? "You heard the bundled chime in a recent check; return uses two notes."
+                  : "Chosen, but a new heard-by-you chime check is required."
                 : "Off. Relays are visual-only; use the exact-time timer backup."}
             </p>
           </div>
@@ -2559,9 +2711,12 @@ function SettingsPanel({
             <h3>Spoken enhancement</h3>
             <p>
               {canUseSpeech()
-                ? preferences.capabilitySnapshot?.speechVerified
-                  ? "Actual voice playback was verified on this device."
-                  : "A speech API is present, but playback is not verified."
+                ? snapshotIsRecent &&
+                  preferences.capabilitySnapshot?.speechVerified
+                  ? "Voice actually started in a recent device check."
+                  : preferences.capabilitySnapshot?.speechVerified
+                    ? "The saved voice check expired; API presence is not playback proof."
+                    : "A speech API is present, but playback is not verified."
                 : "Unavailable here; offline chime and visual cues remain."}
             </p>
           </div>
@@ -2582,8 +2737,10 @@ function SettingsPanel({
             <div>
               <h3>Screen-away launch</h3>
               <p>
-                Saved only here. Verified playback applies while this page can
-                play; it does not establish background or locked-screen delivery.
+                Saved only here. Playback-start evidence plus your heard-by-you
+                check applies only to the tab state at check time. Browsers
+                cannot reveal later mute or establish background or
+                locked-screen delivery.
               </p>
             </div>
             <button className="inline-button" onClick={onReviewLaunch} type="button">
@@ -2595,9 +2752,12 @@ function SettingsPanel({
               <h3>Keep dim display awake</h3>
               <p>
                 {getRelayCapabilities().wakeLock
-                  ? preferences.capabilitySnapshot?.wakeVerified
+                  ? snapshotIsRecent &&
+                    preferences.capabilitySnapshot?.wakeVerified
                     ? "A recent launch obtained screen wake; every chosen launch requests it again."
-                    : "Chosen launches must obtain screen wake before departure."
+                    : preferences.capabilitySnapshot?.wakeVerified
+                      ? "The saved screen-wake check expired; a chosen launch must obtain it again."
+                      : "Chosen launches must obtain screen wake before departure."
                   : "Unavailable in this browser."}
               </p>
             </div>
@@ -3748,6 +3908,7 @@ export default function App() {
     sourceSpace: RelaySpace,
     options: {
       cueSoundEnabled: boolean;
+      chimeConfirmedAt: number | null;
       audioEnabled: boolean;
       keepAwake: boolean;
       alwaysReviewLaunch: boolean;
@@ -3807,7 +3968,8 @@ export default function App() {
         alwaysReviewLaunch: options.alwaysReviewLaunch,
         launchNeedsReview: true,
         capabilitySnapshot: launchCapabilitySnapshot({
-          chimeVerified: options.cueSoundEnabled && chimeResult.ok,
+          chimeVerified: false,
+          audibilityConfirmed: false,
           visualOnlyAcknowledged: !options.cueSoundEnabled,
           speechVerified: false,
           wakeVerified:
@@ -3871,10 +4033,20 @@ export default function App() {
       launchSetupComplete: true,
       launchNeedsReview: false,
       capabilitySnapshot: launchCapabilitySnapshot({
-        chimeVerified: options.cueSoundEnabled,
+        chimeVerified:
+          options.cueSoundEnabled &&
+          typeof options.chimeConfirmedAt === "number",
+        audibilityConfirmed:
+          options.cueSoundEnabled &&
+          typeof options.chimeConfirmedAt === "number",
         visualOnlyAcknowledged: !options.cueSoundEnabled,
         speechVerified: speechStarted,
         wakeVerified: options.keepAwake,
+        checkedAt:
+          options.cueSoundEnabled &&
+          typeof options.chimeConfirmedAt === "number"
+            ? options.chimeConfirmedAt
+            : Date.now(),
       }),
       hasOnboarded: true,
     };
@@ -4333,6 +4505,14 @@ export default function App() {
             homeSpace,
             {
               cueSoundEnabled: preferences.cueSoundEnabled,
+              chimeConfirmedAt:
+                preferences.cueSoundEnabled &&
+                freshCapabilityCheck(preferences.capabilitySnapshot, {
+                  cueSoundEnabled: true,
+                  keepAwake: false,
+                })
+                  ? (preferences.capabilitySnapshot?.checkedAt ?? null)
+                  : null,
               audioEnabled: preferences.audioEnabled,
               keepAwake: preferences.keepAwake,
               alwaysReviewLaunch: preferences.alwaysReviewLaunch,
